@@ -35,6 +35,10 @@ export async function createLLMProvider(config: LLMConfig): Promise<LLMProvider>
     const { DeepSeekProvider } = await import('./deepseek-provider.js')
     return new DeepSeekProvider(config)
   }
+  if (config.baseURL.includes('minimax')) {
+    const { MiniMaxProvider } = await import('./minimax-provider.js')
+    return new MiniMaxProvider(config)
+  }
   const { OpenAIProvider } = await import('./openai-provider.js')
   return new OpenAIProvider(config)
 }

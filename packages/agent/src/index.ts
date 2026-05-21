@@ -17,6 +17,7 @@ export type { AgentEventData, AgentEventName } from './core/event-types.js'
 
 export { DeepSeekProvider } from './providers/deepseek-provider.js'
 export { OpenAIProvider } from './providers/openai-provider.js'
+export { MiniMaxProvider } from './providers/minimax-provider.js'
 export {
   createLLMProvider,
   type LLMProvider,
