@@ -4,6 +4,9 @@ import type { LLMConfig, LLMProvider, LLMResponse } from './llm-provider.js'
 import type { StreamCallbacks, StreamedResponse } from '../llm.js'
 import OpenAI from 'openai'
 
+const THINK_START = '</think>'
+const THINK_END = '<think>'
+
 export class MiniMaxProvider implements LLMProvider {
   private client: OpenAI
   private _model: string
@@ -31,8 +34,12 @@ export class MiniMaxProvider implements LLMProvider {
     const choice = response.choices[0]
     const msg = choice?.message
 
+    // Strip thinking tags from content
+    let content = msg?.content ?? ''
+    content = content.replace(new RegExp(`${THINK_START}[\\s\\S]*?${THINK_END}`, 'g'), '')
+
     return {
-      content: msg?.content ?? '',
+      content,
       reasoning: null,
       toolCalls:
         msg?.tool_calls?.map((tc) => ({
@@ -56,12 +63,15 @@ export class MiniMaxProvider implements LLMProvider {
     callbacks?: StreamCallbacks
   ): Promise<StreamedResponse> {
     const contentParts: string[] = []
+    const reasoningParts: string[] = []
     const toolCallsMap = new Map<number, { id: string; name: string; argsFrags: string[] }>()
+
+    let inThinking = false
 
     const stream = await this.client.chat.completions.create({
       model: this._model,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: tools as OpenAI.Chat.ChatCompletionTool[],
+      tools: tools as OpenAI.Chat.CompletionTool[],
       stream: true,
     })
 
@@ -71,8 +81,29 @@ export class MiniMaxProvider implements LLMProvider {
       const delta = chunk.choices[0].delta as any
 
       if (delta?.content) {
-        contentParts.push(delta.content)
-        callbacks?.onToken?.(delta.content)
+        const text = delta.content as string
+
+        // Handle thinking tags
+        if (text === THINK_START) {
+          inThinking = true
+          continue
+        }
+        if (text === THINK_END) {
+          inThinking = false
+          continue
+        }
+
+        if (inThinking) {
+          // Accumulate reasoning
+          reasoningParts.push(text)
+          callbacks?.onReasoning?.(text)
+        } else {
+          // Emit tokens character by character for streaming effect
+          for (const char of text) {
+            contentParts.push(char)
+            callbacks?.onToken?.(char)
+          }
+        }
       }
 
       if (delta?.tool_calls) {
@@ -104,7 +135,7 @@ export class MiniMaxProvider implements LLMProvider {
 
     return {
       content: contentParts.join(''),
-      reasoning: null,
+      reasoning: reasoningParts.join('') || null,
       toolCalls,
     }
   }
