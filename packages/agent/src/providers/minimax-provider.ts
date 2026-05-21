@@ -5,7 +5,7 @@ import type { StreamCallbacks, StreamedResponse } from '../llm.js'
 import OpenAI from 'openai'
 
 const THINK_START = '</think>'
-const THINK_END = '<think>'
+const THINK_END = '</think>'
 
 export class MiniMaxProvider implements LLMProvider {
   private client: OpenAI
@@ -28,7 +28,7 @@ export class MiniMaxProvider implements LLMProvider {
     const response = await this.client.chat.completions.create({
       model: this._model,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: tools as OpenAI.Chat.ChatCompletionTool[],
+      tools: tools as OpenAI.Chat.CompletionTool[],
     })
 
     const choice = response.choices[0]
@@ -36,7 +36,7 @@ export class MiniMaxProvider implements LLMProvider {
 
     // Strip thinking tags from content
     let content = msg?.content ?? ''
-    content = content.replace(new RegExp(`${THINK_START}[\\s\\S]*?${THINK_END}`, 'g'), '')
+    content = content.split(THINK_START).join('').split(THINK_END).join('')
 
     return {
       content,
@@ -67,6 +67,7 @@ export class MiniMaxProvider implements LLMProvider {
     const toolCallsMap = new Map<number, { id: string; name: string; argsFrags: string[] }>()
 
     let inThinking = false
+    let buffer = ''
 
     const stream = await this.client.chat.completions.create({
       model: this._model,
@@ -81,27 +82,47 @@ export class MiniMaxProvider implements LLMProvider {
       const delta = chunk.choices[0].delta as any
 
       if (delta?.content) {
-        const text = delta.content as string
+        buffer += delta.content
+      }
 
-        // Handle thinking tags
-        if (text === THINK_START) {
-          inThinking = true
-          continue
-        }
-        if (text === THINK_END) {
-          inThinking = false
-          continue
-        }
-
+      // Process buffer for thinking tags
+      while (buffer.length > 0) {
         if (inThinking) {
-          // Accumulate reasoning
-          reasoningParts.push(text)
-          callbacks?.onReasoning?.(text)
+          // Look for end tag
+          const endIdx = buffer.indexOf(THINK_END)
+          if (endIdx >= 0) {
+            const content = buffer.substring(0, endIdx)
+            reasoningParts.push(content)
+            callbacks?.onReasoning?.(content)
+            buffer = buffer.substring(endIdx + THINK_END.length)
+            inThinking = false
+          } else {
+            // End tag not found yet, emit all buffer as reasoning
+            reasoningParts.push(buffer)
+            callbacks?.onReasoning?.(buffer)
+            buffer = ''
+            break
+          }
         } else {
-          // Emit tokens character by character for streaming effect
-          for (const char of text) {
-            contentParts.push(char)
-            callbacks?.onToken?.(char)
+          // Look for start tag
+          const startIdx = buffer.indexOf(THINK_START)
+          if (startIdx >= 0) {
+            // Emit content before start tag as output
+            const before = buffer.substring(0, startIdx)
+            for (const char of before) {
+              contentParts.push(char)
+              callbacks?.onToken?.(char)
+            }
+            buffer = buffer.substring(startIdx + THINK_START.length)
+            inThinking = true
+          } else {
+            // No start tag found, emit buffer as output and clear
+            for (const char of buffer) {
+              contentParts.push(char)
+              callbacks?.onToken?.(char)
+            }
+            buffer = ''
+            break
           }
         }
       }
@@ -117,6 +138,17 @@ export class MiniMaxProvider implements LLMProvider {
           if (tc.function?.name) buf.name = tc.function.name
           if (tc.function?.arguments) buf.argsFrags.push(tc.function.arguments)
         }
+      }
+    }
+
+    // Process remaining buffer
+    if (inThinking && buffer.length > 0) {
+      reasoningParts.push(buffer)
+      callbacks?.onReasoning?.(buffer)
+    } else if (buffer.length > 0) {
+      for (const char of buffer) {
+        contentParts.push(char)
+        callbacks?.onToken?.(char)
       }
     }
 
