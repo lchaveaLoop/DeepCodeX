@@ -1,0 +1,41 @@
+{
+  "name": "fagent",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @fagent/cli dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "install-hooks": "husky install"
+  },
+  "lint-staged": {
+    "packages/agent/src/**/*.ts": [
+      "eslint --config packages/agent/eslint.config.js --fix",
+      "prettier --write"
+    ],
+    "packages/cli/src/**/*.ts": [
+      "eslint --config packages/cli/eslint.config.js --fix",
+      "prettier --write"
+    ],
+    "*.js": [
+      "prettier --write"
+    ],
+    "*.md": [
+      "prettier --write"
+    ]
+  },
+  "devDependencies": {
+    "@commitlint/config-conventional": "^19.7.1",
+    "@eslint/js": "^9.18.0",
+    "commitlint": "^19.7.1",
+    "eslint": "^9.18.0",
+    "eslint-config-prettier": "^10.1.8",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.4.3",
+    "prettier": "^3.4.2",
+    "typescript-eslint": "^8.21.0"
+  }
+}

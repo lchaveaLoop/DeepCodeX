@@ -1,0 +1,23 @@
+#!/bin/sh
+# FAgent pre-commit hook - 运行代码检查
+
+echo "Running pre-commit checks..."
+
+cd "$(dirname "$0")/.."
+
+# 运行 ESLint
+echo "Running ESLint..."
+npx eslint src/
+
+# 运行 Prettier 检查
+echo "Running Prettier..."
+npx prettier --check src/
+
+# 如果检查失败，拒绝提交
+if [ $? -ne 0 ]; then
+  echo "Pre-commit checks failed! Please fix the issues above."
+  exit 1
+fi
+
+echo "Pre-commit checks passed!"
+exit 0
