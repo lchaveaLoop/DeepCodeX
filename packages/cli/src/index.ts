@@ -79,41 +79,44 @@ function enterPhase(newPhase: Phase) {
 // Build agent
 // ═══════════════════════════════════════════════════
 function buildAgent() {
-  return new Agent(createRegistry(), {
-    onReasoning(text) {
-      enterPhase('reasoning');
-      process.stdout.write(text);
-    },
-    onToken(text) {
-      enterPhase('content');
-      process.stdout.write(text);
-    },
-    onToolCall(tc: ToolCall) {
-      enterPhase('tool_calls');
-      const argsText = JSON.stringify(tc.arguments);
-      const argsPreview = argsText.length > 60 ? argsText.slice(0, 57) + '…' : argsText;
-      console.log(
-        `\n${ansi.dim}┌──${ansi.reset} ${style(tc.name, ansi.cyan)} ${style(argsPreview, ansi.gray)}`,
-      );
-    },
-    onToolResult(_tc, result) {
-      const lines = result.split('\n').slice(0, 8);
-      const maxW = Math.min(100, ...lines.map((l) => l.length));
-      for (const line of lines) {
-        console.log(`  ${ansi.gray}│${ansi.reset} ${line.slice(0, maxW)}`);
-      }
-      if (result.split('\n').length > 8) {
-        console.log(`  ${ansi.gray}│${ansi.reset} ${style('…', ansi.dim)}`);
-      }
-      console.log(`${ansi.dim}└──${ansi.reset}`);
-    },
-    async onConfirm(name, args) {
-      console.log(SEP);
-      console.log(`  ${style('⚠ ' + name, ansi.yellow)}`);
-      console.log(`  ${style(JSON.stringify(args, null, 2), ansi.gray)}`);
-      const answer = await ask(`  ${style('Execute? [y/N] ', ansi.yellow)}`);
-      console.log(SEP);
-      return answer.trim().toLowerCase() === 'y';
+  return new Agent({
+    registry: createRegistry(),
+    callbacks: {
+      onReasoning(text) {
+        enterPhase('reasoning');
+        process.stdout.write(text);
+      },
+      onToken(text) {
+        enterPhase('content');
+        process.stdout.write(text);
+      },
+      onToolCall(tc: ToolCall) {
+        enterPhase('tool_calls');
+        const argsText = JSON.stringify(tc.arguments);
+        const argsPreview = argsText.length > 60 ? argsText.slice(0, 57) + '…' : argsText;
+        console.log(
+          `\n${ansi.dim}┌──${ansi.reset} ${style(tc.name, ansi.cyan)} ${style(argsPreview, ansi.gray)}`,
+        );
+      },
+      onToolResult(_tc, result) {
+        const lines = result.split('\n').slice(0, 8);
+        const maxW = Math.min(100, ...lines.map((l) => l.length));
+        for (const line of lines) {
+          console.log(`  ${ansi.gray}│${ansi.reset} ${line.slice(0, maxW)}`);
+        }
+        if (result.split('\n').length > 8) {
+          console.log(`  ${ansi.gray}│${ansi.reset} ${style('…', ansi.dim)}`);
+        }
+        console.log(`${ansi.dim}└──${ansi.reset}`);
+      },
+      async onConfirm(name, args) {
+        console.log(SEP);
+        console.log(`  ${style('⚠ ' + name, ansi.yellow)}`);
+        console.log(`  ${style(JSON.stringify(args, null, 2), ansi.gray)}`);
+        const answer = await ask(`  ${style('Execute? [y/N] ', ansi.yellow)}`);
+        console.log(SEP);
+        return answer.trim().toLowerCase() === 'y';
+      },
     },
   });
 }
