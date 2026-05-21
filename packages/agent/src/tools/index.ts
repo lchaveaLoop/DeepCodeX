@@ -8,7 +8,7 @@ export interface ToolDef<Args extends z.ZodTypeAny> {
   name: string
   description: string
   parameters: Args
-  handler: (args: z.infer<Args>) => string | Promise<string>
+  handler: (_args: z.infer<Args>) => string | Promise<string>
   requiresConfirm?: boolean
 }
 

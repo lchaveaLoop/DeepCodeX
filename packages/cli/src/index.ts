@@ -187,8 +187,9 @@ async function main() {
           try {
             await saveSession(agent.messageHistory, arg);
             console.log(`  Saved → ${style(arg, ansi.yellow)}`);
-          } catch (e: any) {
-            console.log(style(e.message, ansi.red));
+          } catch (e: unknown) {
+            const err = e as Error;
+            console.log(style(err?.message || String(e), ansi.red));
           }
           continue;
 
@@ -202,8 +203,9 @@ async function main() {
             agent = buildAgent();
             agent.loadMessages(msgs);
             console.log(`  Loaded ${msgs.length} msgs ← ${style(arg, ansi.yellow)}`);
-          } catch (e: any) {
-            console.log(style(e.message, ansi.red));
+          } catch (e: unknown) {
+            const err = e as Error;
+            console.log(style(err?.message || String(e), ansi.red));
           }
           continue;
 
@@ -224,8 +226,9 @@ async function main() {
     console.log();
     try {
       await agent.run(input);
-    } catch (e: any) {
-      console.log(style(`\nError: ${e.message}`, ansi.red));
+    } catch (e: unknown) {
+      const err = e as Error;
+      console.log(style(`\nError: ${err?.message || e}`, ansi.red));
     }
     console.log('\n' + style('·'.repeat(40), ansi.dim));
   }

@@ -25,8 +25,9 @@ function runCommand(args: RunCommandArgs): string {
     }
 
     return output
-  } catch (e: any) {
-    const msg = e?.stderr || e?.message || String(e)
+  } catch (e: unknown) {
+    const err = e as Error
+    const msg = err?.message || String(e)
     if (msg.length > 2000) {
       return msg.slice(0, 2000) + `\n... (truncated)`
     }

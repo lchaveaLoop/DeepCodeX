@@ -48,8 +48,9 @@ async function webSearch(args: WebSearchArgs): Promise<string> {
     }
 
     return results.join('\n\n')
-  } catch (e) {
-    return `Error: web search failed — ${e}`
+  } catch (e: unknown) {
+    const err = e as Error
+    return `Error: web search failed — ${err?.message || e}`
   }
 }
 

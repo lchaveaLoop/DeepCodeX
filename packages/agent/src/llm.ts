@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { MODEL, API_KEY, BASE_URL } from './config.js'
+import { MODEL } from './config.js'
 
 // ═══════════════════════════════════════════════════
 // Types
@@ -22,9 +22,9 @@ export interface StreamedResponse {
 // ═══════════════════════════════════════════════════
 
 export interface StreamCallbacks {
-  onToken?: (text: string) => void
-  onReasoning?: (text: string) => void
-  onToolCall?: (tc: ToolCall) => void
+  onToken?: (_text: string) => void
+  onReasoning?: (_text: string) => void
+  onToolCall?: (_tc: ToolCall) => void
 }
 
 export async function streamAndAccumulate(

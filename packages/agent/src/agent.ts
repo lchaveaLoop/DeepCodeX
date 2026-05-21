@@ -5,8 +5,8 @@ import { type ToolRegistry } from './tools/index.js'
 
 export interface AgentCallbacks extends StreamCallbacks {
   /** Called when a destructive tool needs user confirmation. Return true to proceed. */
-  onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean>
-  onToolResult?: (tc: ToolCall, result: string) => void
+  onConfirm?: (_toolName: string, _args: Record<string, unknown>) => Promise<boolean>
+  onToolResult?: (_tc: ToolCall, _result: string) => void
 }
 
 export class Agent {
