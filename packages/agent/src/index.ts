@@ -14,3 +14,12 @@ export * as config from './config.js'
 export { EventEmitter } from './core/event-emitter.js'
 export { AgentEvent } from './core/event-types.js'
 export type { AgentEventData, AgentEventName } from './core/event-types.js'
+
+export { DeepSeekProvider } from './providers/deepseek-provider.js'
+export { OpenAIProvider } from './providers/openai-provider.js'
+export {
+  createLLMProvider,
+  type LLMProvider,
+  type LLMConfig,
+  type LLMResponse,
+} from './providers/llm-provider.js'

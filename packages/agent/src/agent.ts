@@ -1,9 +1,10 @@
-import OpenAI from 'openai'
-import { API_KEY, BASE_URL, MAX_TOOL_ROUNDS, SYSTEM_PROMPT } from './config.js'
-import { streamAndAccumulate, type StreamCallbacks, type ToolCall } from './llm.js'
+import { API_KEY, BASE_URL, MAX_TOOL_ROUNDS, SYSTEM_PROMPT, MODEL } from './config.js'
+import { type StreamCallbacks, type ToolCall } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
 import { AgentEvent } from './core/event-types.js'
+import type { LLMProvider } from './providers/llm-provider.js'
+import { DeepSeekProvider } from './providers/deepseek-provider.js'
 
 export interface AgentCallbacks extends StreamCallbacks {
   /** Called when a destructive tool needs user confirmation. Return true to proceed. */
@@ -17,10 +18,11 @@ export interface AgentConfig {
   events?: EventEmitter
   maxRounds?: number
   systemPrompt?: string
+  provider?: LLMProvider
 }
 
 export class Agent {
-  private client: OpenAI
+  private provider: LLMProvider
   private registry: ToolRegistry
   private messages: OpenAI.Chat.ChatCompletionMessageParam[]
   private events: EventEmitter
@@ -35,19 +37,18 @@ export class Agent {
     registryOrConfig: ToolRegistry | AgentConfig,
     _callbacksOrEvents?: AgentCallbacks | EventEmitter
   ) {
-    if (!API_KEY) {
-      throw new Error('DEEPSEEK_API_KEY not set in .env')
-    }
-
-    this.client = new OpenAI({ apiKey: API_KEY, baseURL: BASE_URL })
-
-    // Overload: legacy constructor
+    // Overload: legacy constructor (for backward compatibility)
     if (registryOrConfig instanceof ToolRegistry) {
       this.registry = registryOrConfig
       this.callbacks = _callbacksOrEvents as AgentCallbacks | undefined
       this.events = new EventEmitter()
       this.maxRounds = MAX_TOOL_ROUNDS
       this.systemPrompt = SYSTEM_PROMPT
+      this.provider = new DeepSeekProvider({
+        apiKey: API_KEY,
+        baseURL: BASE_URL,
+        model: MODEL,
+      })
     } else {
       // New constructor with config
       this.registry = registryOrConfig.registry
@@ -55,6 +56,13 @@ export class Agent {
       this.events = registryOrConfig.events ?? new EventEmitter()
       this.maxRounds = registryOrConfig.maxRounds ?? MAX_TOOL_ROUNDS
       this.systemPrompt = registryOrConfig.systemPrompt ?? SYSTEM_PROMPT
+      this.provider =
+        registryOrConfig.provider ??
+        new DeepSeekProvider({
+          apiKey: API_KEY,
+          baseURL: BASE_URL,
+          model: MODEL,
+        })
     }
 
     this.messages = [{ role: 'system', content: this.systemPrompt }]
@@ -66,6 +74,10 @@ export class Agent {
 
   get eventsEmitter(): EventEmitter {
     return this.events
+  }
+
+  get llmProvider(): LLMProvider {
+    return this.provider
   }
 
   loadMessages(msgs: OpenAI.Chat.ChatCompletionMessageParam[]): void {
@@ -112,8 +124,7 @@ export class Agent {
       const startTime = Date.now()
 
       try {
-        const response = await streamAndAccumulate(
-          this.client,
+        const response = await this.provider.stream(
           this.messages,
           tools,
           this.createStreamCallbacks()
