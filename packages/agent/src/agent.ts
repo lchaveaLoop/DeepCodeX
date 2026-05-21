@@ -1,10 +1,19 @@
-import { API_KEY, BASE_URL, MAX_TOOL_ROUNDS, SYSTEM_PROMPT, MODEL } from './config.js'
+import { MAX_TOOL_ROUNDS, SYSTEM_PROMPT, getProviderConfig, DEFAULT_PROVIDER } from './config.js'
 import { type StreamCallbacks, type ToolCall } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
 import { AgentEvent } from './core/event-types.js'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
+import { MiniMaxProvider } from './providers/minimax-provider.js'
+
+function createProvider() {
+  const config = getProviderConfig()
+  if (DEFAULT_PROVIDER === 'minimax') {
+    return new MiniMaxProvider(config)
+  }
+  return new DeepSeekProvider(config)
+}
 
 export interface AgentCallbacks extends StreamCallbacks {
   /** Called when a destructive tool needs user confirmation. Return true to proceed. */
@@ -37,17 +46,18 @@ export class Agent {
     registryOrConfig: ToolRegistry | AgentConfig,
     _callbacksOrEvents?: AgentCallbacks | EventEmitter
   ) {
-    // Overload: legacy constructor (for backward compatibility)
+    // Overload: legacy constructor uses DeepSeek for backward compatibility
     if (registryOrConfig instanceof ToolRegistry) {
       this.registry = registryOrConfig
       this.callbacks = _callbacksOrEvents as AgentCallbacks | undefined
       this.events = new EventEmitter()
       this.maxRounds = MAX_TOOL_ROUNDS
       this.systemPrompt = SYSTEM_PROMPT
+      // Legacy constructor always uses DeepSeek (tests mock streamAndAccumulate)
       this.provider = new DeepSeekProvider({
-        apiKey: API_KEY,
-        baseURL: BASE_URL,
-        model: MODEL,
+        apiKey: process.env.DEEPSEEK_API_KEY ?? '',
+        baseURL: 'https://api.deepseek.com',
+        model: 'deepseek-v4-pro',
       })
     } else {
       // New constructor with config
@@ -56,13 +66,7 @@ export class Agent {
       this.events = registryOrConfig.events ?? new EventEmitter()
       this.maxRounds = registryOrConfig.maxRounds ?? MAX_TOOL_ROUNDS
       this.systemPrompt = registryOrConfig.systemPrompt ?? SYSTEM_PROMPT
-      this.provider =
-        registryOrConfig.provider ??
-        new DeepSeekProvider({
-          apiKey: API_KEY,
-          baseURL: BASE_URL,
-          model: MODEL,
-        })
+      this.provider = registryOrConfig.provider ?? createProvider()
     }
 
     this.messages = [{ role: 'system', content: this.systemPrompt }]

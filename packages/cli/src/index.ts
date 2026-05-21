@@ -139,11 +139,15 @@ function printHelp() {
 // Main
 // ═══════════════════════════════════════════════════
 async function main() {
+  const providerConfig = config.getProviderConfig();
   console.log();
   console.log(
-    `  ${style('DeepSeek Agent', ansi.magenta + ansi.bold)}  ${style('TS CLI', ansi.dim)}`,
+    `  ${style('DeepCodeX Agent', ansi.magenta + ansi.bold)}  ${style('TS CLI', ansi.dim)}`,
   );
-  console.log(`  Model: ${style(config.MODEL, ansi.cyan)}  |  Workspace: ${process.cwd()}`);
+  console.log(
+    `  Provider: ${style(config.DEFAULT_PROVIDER.toUpperCase(), ansi.cyan)}  |  Model: ${style(providerConfig.model, ansi.cyan)}`,
+  );
+  console.log(`  Workspace: ${process.cwd()}`);
   console.log();
 
   let agent = buildAgent();
