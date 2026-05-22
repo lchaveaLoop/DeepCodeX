@@ -1,11 +1,19 @@
-import { MAX_TOOL_ROUNDS, SYSTEM_PROMPT, getProviderConfig, DEFAULT_PROVIDER } from './config.js'
-import { type StreamCallbacks, type ToolCall } from './llm.js'
+import {
+  MAX_TOOL_ROUNDS,
+  SYSTEM_PROMPT,
+  getProviderConfig,
+  DEFAULT_PROVIDER,
+  MAX_LLM_RETRIES,
+  LLM_RETRY_DELAY_MS,
+} from './config.js'
+import { type StreamCallbacks, type ToolCall, type StreamedResponse } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
 import { AgentEvent } from './core/event-types.js'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
 import { MiniMaxProvider } from './providers/minimax-provider.js'
+import { logger } from './logger.js'
 
 function createProvider() {
   const config = getProviderConfig()
@@ -28,6 +36,27 @@ export interface AgentConfig {
   maxRounds?: number
   systemPrompt?: string
   provider?: LLMProvider
+  maxContextTokens?: number
+}
+
+function isRetryableError(e: unknown): boolean {
+  if (typeof e === 'object' && e !== null && 'status' in e) {
+    const status = (e as { status: number }).status
+    if (status === 429 || status >= 500) return true
+    if (status === 401 || status === 400) return false
+  }
+  if (e instanceof Error) {
+    const msg = e.message.toLowerCase()
+    if (
+      msg.includes('fetch failed') ||
+      msg.includes('econnrefused') ||
+      msg.includes('etimedout') ||
+      msg.includes('enotfound') ||
+      msg.includes('network')
+    )
+      return true
+  }
+  return false
 }
 
 export class Agent {
@@ -39,6 +68,9 @@ export class Agent {
   private maxRounds: number
   private systemPrompt: string
   private totalRounds = 0
+  private maxContextTokens: number
+  private contextThresholdRatio = 0.85
+  totalTokensUsed = 0
 
   constructor(config: AgentConfig)
   constructor(registry: ToolRegistry, callbacks?: AgentCallbacks)
@@ -53,6 +85,7 @@ export class Agent {
       this.events = new EventEmitter()
       this.maxRounds = MAX_TOOL_ROUNDS
       this.systemPrompt = SYSTEM_PROMPT
+      this.maxContextTokens = 128_000
       // Legacy constructor always uses DeepSeek (tests mock streamAndAccumulate)
       this.provider = new DeepSeekProvider({
         apiKey: process.env.DEEPSEEK_API_KEY ?? '',
@@ -66,6 +99,7 @@ export class Agent {
       this.events = registryOrConfig.events ?? new EventEmitter()
       this.maxRounds = registryOrConfig.maxRounds ?? MAX_TOOL_ROUNDS
       this.systemPrompt = registryOrConfig.systemPrompt ?? SYSTEM_PROMPT
+      this.maxContextTokens = registryOrConfig.maxContextTokens ?? 128_000
       this.provider = registryOrConfig.provider ?? createProvider()
     }
 
@@ -86,6 +120,51 @@ export class Agent {
 
   loadMessages(msgs: OpenAI.Chat.ChatCompletionMessageParam[]): void {
     this.messages = msgs
+  }
+
+  private estimateTokens(): number {
+    // Rough estimate: ~4 chars per token for English text
+    let chars = 0
+    for (const msg of this.messages) {
+      if (typeof msg.content === 'string') chars += msg.content.length
+    }
+    return Math.ceil(chars / 4)
+  }
+
+  private pruneContext(): void {
+    const threshold = Math.floor(this.maxContextTokens * this.contextThresholdRatio)
+    const estimated = this.estimateTokens()
+    if (estimated <= threshold) return
+
+    // Keep system message (index 0) + remove oldest non-system messages
+    const system = this.messages[0]
+    const rest = this.messages.slice(1)
+    // Keep the most recent 60% of non-system messages
+    const keep = Math.max(2, Math.floor(rest.length * 0.6))
+    const trimmed = rest.slice(-keep)
+    this.messages = [system, ...trimmed]
+    logger.warn('context pruned', {
+      before: { messages: rest.length + 1, estimatedTokens: estimated },
+      after: { messages: this.messages.length },
+      threshold,
+    })
+  }
+
+  private async retryStream(tools: Record<string, unknown>[]): Promise<StreamedResponse> {
+    this.pruneContext()
+    let lastError: unknown
+    for (let attempt = 0; attempt <= MAX_LLM_RETRIES; attempt++) {
+      try {
+        return await this.provider.stream(this.messages, tools, this.createStreamCallbacks())
+      } catch (e) {
+        lastError = e
+        if (attempt >= MAX_LLM_RETRIES || !isRetryableError(e)) throw e
+        const delay = LLM_RETRY_DELAY_MS * Math.pow(2, attempt)
+        logger.warn('llm retry', { attempt: attempt + 1, delayMs: delay, error: String(e) })
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+    throw lastError
   }
 
   private createStreamCallbacks(): StreamCallbacks {
@@ -111,6 +190,7 @@ export class Agent {
 
   async run(userInput: string): Promise<string> {
     this.totalRounds = 0
+    logger.info('run start', { inputLen: userInput.length, provider: this.provider.model })
     this.messages.push({ role: 'user', content: userInput })
     this.events.emit(AgentEvent.RUN_START, { input: userInput })
     this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
@@ -128,13 +208,21 @@ export class Agent {
       const startTime = Date.now()
 
       try {
-        const response = await this.provider.stream(
-          this.messages,
-          tools,
-          this.createStreamCallbacks()
-        )
+        const response = await this.retryStream(tools)
+
+        if (response.usage) {
+          this.totalTokensUsed += response.usage.totalTokens
+        }
 
         const duration = Date.now() - startTime
+        logger.info('llm response', {
+          round,
+          durationMs: duration,
+          hasContent: !!response.content,
+          hasToolCalls: response.toolCalls.length > 0,
+          tokens: response.usage?.totalTokens ?? 0,
+          totalAccumulated: this.totalTokensUsed,
+        })
         this.events.emit(AgentEvent.LLM_RESPONSE, {
           hasContent: !!response.content,
           hasToolCalls: response.toolCalls.length > 0,

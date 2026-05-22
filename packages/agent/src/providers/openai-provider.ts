@@ -2,6 +2,7 @@
 
 import OpenAI from 'openai'
 import type { LLMConfig, LLMProvider, LLMResponse } from './llm-provider.js'
+import { streamAndAccumulate, type StreamCallbacks, type StreamedResponse } from '../llm.js'
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI
@@ -49,41 +50,16 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async stream(messages: unknown[], tools: unknown[], _callbacks?: unknown): Promise<LLMResponse> {
-    const stream = await this.client.chat.completions.create({
-      model: this._model,
-      messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: tools as OpenAI.Chat.ChatCompletionTool[],
-      stream: true,
-    })
-
-    let content = ''
-    const toolCalls: LLMResponse['toolCalls'] = []
-
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta
-      if (delta?.content) {
-        content += delta.content
-      }
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0
-          if (!toolCalls[idx]) {
-            toolCalls[idx] = {
-              id: tc.id ?? '',
-              name: tc.function?.name ?? '',
-              arguments: {},
-            }
-          }
-          if (tc.function?.arguments) {
-            toolCalls[idx].arguments = JSON.parse(
-              (toolCalls[idx].arguments as any) + tc.function.arguments
-            )
-          }
-        }
-      }
-    }
-
-    return { content, reasoning: null, toolCalls }
+  async stream(
+    messages: unknown[],
+    tools: unknown[],
+    callbacks?: StreamCallbacks
+  ): Promise<StreamedResponse> {
+    return streamAndAccumulate(
+      this.client,
+      messages as OpenAI.Chat.ChatCompletionMessageParam[],
+      tools,
+      callbacks
+    )
   }
 }

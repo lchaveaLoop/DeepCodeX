@@ -15,6 +15,11 @@ export interface StreamedResponse {
   content: string
   reasoning: string | null
   toolCalls: ToolCall[]
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -45,10 +50,20 @@ export async function streamAndAccumulate(
     tools: tools as any,
     stream: true,
     reasoning_effort: 'high',
+    stream_options: { include_usage: true },
     extra_body: { thinking: { type: 'enabled' } },
   })
 
+  let streamUsage: StreamedResponse['usage']
+
   for await (const chunk of stream) {
+    if (chunk.usage) {
+      streamUsage = {
+        promptTokens: chunk.usage.prompt_tokens,
+        completionTokens: chunk.usage.completion_tokens,
+        totalTokens: chunk.usage.total_tokens,
+      }
+    }
     if (!chunk.choices?.length) continue
 
     const delta = chunk.choices[0].delta as any
@@ -105,5 +120,6 @@ export async function streamAndAccumulate(
     content: contentParts.join(''),
     reasoning: reasoningParts.length ? reasoningParts.join('') : null,
     toolCalls,
+    usage: streamUsage,
   }
 }
