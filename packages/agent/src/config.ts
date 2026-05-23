@@ -101,3 +101,9 @@ export const DANGEROUS_PATTERNS = [
 export function detectDangerousPatterns(command: string): string[] {
   return DANGEROUS_PATTERNS.filter((p) => p.pattern.test(command)).map((p) => p.label)
 }
+
+// ── Search provider ──
+export const SEARCH_PROVIDER = (process.env.SEARCH_PROVIDER ?? 'auto') as
+  | 'auto'
+  | 'duckduckgo'
+  | 'minimax'
