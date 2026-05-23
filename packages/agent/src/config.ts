@@ -103,7 +103,4 @@ export function detectDangerousPatterns(command: string): string[] {
 }
 
 // ── Search provider ──
-export const SEARCH_PROVIDER = (process.env.SEARCH_PROVIDER ?? 'auto') as
-  | 'auto'
-  | 'duckduckgo'
-  | 'minimax'
+export const SEARCH_PROVIDER = (process.env.SEARCH_PROVIDER ?? 'auto') as 'auto' | 'minimax'
