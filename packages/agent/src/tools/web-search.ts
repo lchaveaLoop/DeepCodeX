@@ -16,44 +16,56 @@ export const WebSearchArgs = z.object({
 
 type WebSearchArgs = z.infer<typeof WebSearchArgs>
 
-// ── DuckDuckGo backend ──
-async function duckduckgoSearch(query: string, topK: number): Promise<string> {
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
+// Real-browser UA — avoids scraper blocking
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'FAgent/0.1 (code-assistant)' },
-    signal: AbortSignal.timeout(10_000),
+// ── Bing backend (default, free, no key) ──
+const BING = 'https://cn.bing.com/search'
+
+async function bingSearch(query: string, topK: number): Promise<string> {
+  const resp = await fetch(`${BING}?q=${encodeURIComponent(query)}`, {
+    headers: {
+      'User-Agent': UA,
+      Accept: 'text/html,application/xhtml+xml',
+      'Accept-Language': 'zh-CN,zh;q=0.9',
+    },
+    signal: AbortSignal.timeout(15_000),
   })
 
-  if (!resp.ok) {
-    throw new Error(`DuckDuckGo returned HTTP ${resp.status}`)
-  }
+  if (!resp.ok) throw new Error(`Bing returned HTTP ${resp.status}`)
 
   const html = await resp.text()
 
-  const resultRegex =
-    /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([^<]*?)<\/a>/gi
+  // Detect captcha / block
+  if (/verify you are human|captcha|access denied/i.test(html)) {
+    throw new Error('Bing returned a captcha page (rate-limited)')
+  }
+
+  // Parse: <li class="b_algo"> → <h2><a href="...">title</a></h2> → <div class="b_caption"><p>snippet</p>
+  const blockRe =
+    /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>[\s\S]*?<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<div[^>]*class="[^"]*b_caption[^"]*"[^>]*>\s*(?:<[^>]*>)*\s*<p[^>]*>([\s\S]*?)<\/p>/gi
 
   const results: string[] = []
-  let match: RegExpExecArray | null
-  while ((match = resultRegex.exec(html)) !== null) {
-    const url = match[1]
-    const title = match[2].replace(/<[^>]*>/g, '').trim()
-    const snippet = match[3].replace(/<[^>]*>/g, '').trim()
-    if (title && snippet) {
+  let m: RegExpExecArray | null
+  while ((m = blockRe.exec(html)) !== null) {
+    const url = m[1]
+    const title = m[2].replace(/<[^>]*>/g, '').trim()
+    const snippet = m[3]
+      .replace(/<[^>]*>/g, '')
+      .trim()
+      .replace(/\s+/g, ' ')
+    if (title && url) {
       results.push(`${results.length + 1}. ${title}\n   ${url}\n   ${snippet}`)
     }
     if (results.length >= topK) break
   }
 
-  if (results.length === 0) {
-    return `No results found for "${query}".`
-  }
-
+  if (results.length === 0) return `No results found for "${query}".`
   return results.join('\n\n')
 }
 
-// ── MiniMax backend ──
+// ── MiniMax backend (paid, uses API credits) ──
 async function minimaxSearch(query: string, topK: number): Promise<string> {
   const client = new OpenAI({
     apiKey: MINIMAX_API_KEY,
@@ -69,9 +81,6 @@ async function minimaxSearch(query: string, topK: number): Promise<string> {
     enable_web_search: true,
   } as any)
 
-  const text = response.choices?.[0]?.message?.content ?? ''
-
-  // Try to extract search sources from MiniMax's response
   const sources = (response as any).search_sources
   if (sources && Array.isArray(sources)) {
     const results = sources.slice(0, topK).map((s: any, i: number) => {
@@ -83,7 +92,7 @@ async function minimaxSearch(query: string, topK: number): Promise<string> {
     if (results.length > 0) return results.join('\n\n')
   }
 
-  // Fallback: return the model's text response
+  const text = response.choices?.[0]?.message?.content ?? ''
   if (text.trim()) return text.trim()
 
   throw new Error('MiniMax search returned empty results')
@@ -91,43 +100,32 @@ async function minimaxSearch(query: string, topK: number): Promise<string> {
 
 // ── Router ──
 async function webSearch(args: WebSearchArgs): Promise<string> {
-  const provider =
-    SEARCH_PROVIDER === 'auto'
-      ? DEFAULT_PROVIDER === 'minimax' && MINIMAX_API_KEY
-        ? 'minimax'
-        : 'duckduckgo'
-      : SEARCH_PROVIDER
+  const router = SEARCH_PROVIDER === 'auto' ? 'bing' : SEARCH_PROVIDER
+  const providers: Array<{ name: string; fn: () => Promise<string> }> = []
 
-  const errors: string[] = []
-
-  // Try primary provider
-  if (provider === 'minimax') {
-    try {
-      return await minimaxSearch(args.query, args.topK)
-    } catch (e) {
-      errors.push(`MiniMax search: ${e instanceof Error ? e.message : e}`)
+  if (router === 'bing') {
+    providers.push({ name: 'Bing', fn: () => bingSearch(args.query, args.topK) })
+    // Fallback to MiniMax if key available
+    if (MINIMAX_API_KEY) {
+      providers.push({ name: 'MiniMax (fallback)', fn: () => minimaxSearch(args.query, args.topK) })
     }
-  } else {
+  } else if (router === 'minimax') {
+    providers.push({ name: 'MiniMax', fn: () => minimaxSearch(args.query, args.topK) })
+    providers.push({ name: 'Bing (fallback)', fn: () => bingSearch(args.query, args.topK) })
+  } else if (router === 'duckduckgo') {
+    // DuckDuckGo HTML was unreliable — use Bing instead
+    providers.push({ name: 'Bing', fn: () => bingSearch(args.query, args.topK) })
+  }
+
+  for (const p of providers) {
     try {
-      return await duckduckgoSearch(args.query, args.topK)
+      return await p.fn()
     } catch (e) {
-      errors.push(`DuckDuckGo: ${e instanceof Error ? e.message : e}`)
+      // continue to next provider
     }
   }
 
-  // Fallback: try the other provider
-  const fallback = provider === 'minimax' ? 'duckduckgo' : 'minimax'
-  try {
-    if (fallback === 'duckduckgo') {
-      return await duckduckgoSearch(args.query, args.topK)
-    } else if (MINIMAX_API_KEY) {
-      return await minimaxSearch(args.query, args.topK)
-    }
-  } catch (e) {
-    errors.push(`${fallback} fallback: ${e instanceof Error ? e.message : e}`)
-  }
-
-  return `Search failed:\n${errors.join('\n')}`
+  return `Search failed: all providers exhausted for "${args.query}". Try a different query.`
 }
 
 export const webSearchTool: ToolDef<typeof WebSearchArgs> = {
