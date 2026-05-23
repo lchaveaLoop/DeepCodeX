@@ -20,11 +20,11 @@ type WebSearchArgs = z.infer<typeof WebSearchArgs>
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-// ── Bing backend (default, free, no key) ──
-const BING = 'https://cn.bing.com/search'
+// ── Google backend (default, free, no key) ──
+const GOOGLE = 'https://www.google.com/search'
 
-async function bingSearch(query: string, topK: number): Promise<string> {
-  const resp = await fetch(`${BING}?q=${encodeURIComponent(query)}`, {
+async function googleSearch(query: string, topK: number): Promise<string> {
+  const resp = await fetch(`${GOOGLE}?q=${encodeURIComponent(query)}&hl=zh-CN`, {
     headers: {
       'User-Agent': UA,
       Accept: 'text/html,application/xhtml+xml',
@@ -33,29 +33,30 @@ async function bingSearch(query: string, topK: number): Promise<string> {
     signal: AbortSignal.timeout(15_000),
   })
 
-  if (!resp.ok) throw new Error(`Bing returned HTTP ${resp.status}`)
+  if (!resp.ok) throw new Error(`Google returned HTTP ${resp.status}`)
 
   const html = await resp.text()
 
   // Detect captcha / block
-  if (/verify you are human|captcha|access denied/i.test(html)) {
-    throw new Error('Bing returned a captcha page (rate-limited)')
+  if (/verify you are human|captcha|unusual traffic|access denied/i.test(html)) {
+    throw new Error('Google returned a captcha page (rate-limited)')
   }
 
-  // Parse: <li class="b_algo"> → <h2><a href="...">title</a></h2> → <div class="b_caption"><p>snippet</p>
-  const blockRe =
-    /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>[\s\S]*?<h2[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<div[^>]*class="[^"]*b_caption[^"]*"[^>]*>\s*(?:<[^>]*>)*\s*<p[^>]*>([\s\S]*?)<\/p>/gi
+  // Parse Google results
+  // Each result: <a href="url"><h3>title</h3></a> ... snippet text nearby
+  const resultRe =
+    /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>\s*(?:<[^>]*>)*\s*<h3[^>]*>([\s\S]*?)<\/h3>\s*<\/a>[\s\S]{0,500}?(?:<span[^>]*>([\s\S]{20,300}?)<\/span>)/gi
 
   const results: string[] = []
   let m: RegExpExecArray | null
-  while ((m = blockRe.exec(html)) !== null) {
+  while ((m = resultRe.exec(html)) !== null) {
     const url = m[1]
     const title = m[2].replace(/<[^>]*>/g, '').trim()
     const snippet = m[3]
       .replace(/<[^>]*>/g, '')
       .trim()
       .replace(/\s+/g, ' ')
-    if (title && url) {
+    if (title && url && !url.includes('google.com')) {
       results.push(`${results.length + 1}. ${title}\n   ${url}\n   ${snippet}`)
     }
     if (results.length >= topK) break
@@ -100,21 +101,17 @@ async function minimaxSearch(query: string, topK: number): Promise<string> {
 
 // ── Router ──
 async function webSearch(args: WebSearchArgs): Promise<string> {
-  const router = SEARCH_PROVIDER === 'auto' ? 'bing' : SEARCH_PROVIDER
+  const router = SEARCH_PROVIDER === 'auto' ? 'google' : SEARCH_PROVIDER
   const providers: Array<{ name: string; fn: () => Promise<string> }> = []
 
-  if (router === 'bing') {
-    providers.push({ name: 'Bing', fn: () => bingSearch(args.query, args.topK) })
-    // Fallback to MiniMax if key available
+  if (router === 'google') {
+    providers.push({ name: 'Google', fn: () => googleSearch(args.query, args.topK) })
     if (MINIMAX_API_KEY) {
       providers.push({ name: 'MiniMax (fallback)', fn: () => minimaxSearch(args.query, args.topK) })
     }
   } else if (router === 'minimax') {
     providers.push({ name: 'MiniMax', fn: () => minimaxSearch(args.query, args.topK) })
-    providers.push({ name: 'Bing (fallback)', fn: () => bingSearch(args.query, args.topK) })
-  } else if (router === 'duckduckgo') {
-    // DuckDuckGo HTML was unreliable — use Bing instead
-    providers.push({ name: 'Bing', fn: () => bingSearch(args.query, args.topK) })
+    providers.push({ name: 'Google (fallback)', fn: () => googleSearch(args.query, args.topK) })
   }
 
   for (const p of providers) {
