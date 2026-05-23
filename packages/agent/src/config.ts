@@ -51,6 +51,11 @@ export const MAX_TOOL_ROUNDS = 10
 export const MAX_LLM_RETRIES = 3
 export const LLM_RETRY_DELAY_MS = 1000
 
+// ── Planning ──
+export const PLAN_ENABLED = process.env.PLAN_ENABLED !== 'false'
+export const PLAN_MIN_STEPS = Number(process.env.PLAN_MIN_STEPS ?? 2)
+export const PLAN_MAX_STEPS = Number(process.env.PLAN_MAX_STEPS ?? 7)
+
 export const SYSTEM_PROMPT = `You are a helpful code assistant with access to workspace tools.
 Use tools to read files, write files, run shell commands, and search the web.
 After each tool observation, decide whether you need more context or can answer the user.`

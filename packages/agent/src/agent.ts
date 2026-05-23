@@ -5,6 +5,9 @@ import {
   DEFAULT_PROVIDER,
   MAX_LLM_RETRIES,
   LLM_RETRY_DELAY_MS,
+  PLAN_ENABLED,
+  PLAN_MIN_STEPS,
+  PLAN_MAX_STEPS,
 } from './config.js'
 import { type StreamCallbacks, type ToolCall, type StreamedResponse } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
@@ -14,6 +17,10 @@ import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
 import { MiniMaxProvider } from './providers/minimax-provider.js'
 import { logger } from './logger.js'
+import { buildAgentContext } from './planning/agent-context.js'
+import { TaskManager } from './planning/task-manager.js'
+import { generatePlan } from './planning/planner.js'
+import type { RecentAction } from './planning/types.js'
 
 function createProvider() {
   const config = getProviderConfig()
@@ -24,7 +31,6 @@ function createProvider() {
 }
 
 export interface AgentCallbacks extends StreamCallbacks {
-  /** Called when a destructive tool needs user confirmation. Return true to proceed. */
   onConfirm?: (_toolName: string, _args: Record<string, unknown>) => Promise<boolean>
   onToolResult?: (_tc: ToolCall, _result: string) => void
 }
@@ -37,6 +43,11 @@ export interface AgentConfig {
   systemPrompt?: string
   provider?: LLMProvider
   maxContextTokens?: number
+  planning?: {
+    enabled?: boolean
+    minSteps?: number
+    maxSteps?: number
+  }
 }
 
 function isRetryableError(e: unknown): boolean {
@@ -71,6 +82,12 @@ export class Agent {
   private maxContextTokens: number
   private contextThresholdRatio = 0.85
   totalTokensUsed = 0
+  private recentActions: RecentAction[] = []
+  private taskManager?: TaskManager
+  private planEnabled: boolean
+  private planMinSteps: number
+  private planMaxSteps: number
+  private hasLoadedHistory = false
 
   constructor(config: AgentConfig)
   constructor(registry: ToolRegistry, callbacks?: AgentCallbacks)
@@ -78,7 +95,6 @@ export class Agent {
     registryOrConfig: ToolRegistry | AgentConfig,
     _callbacksOrEvents?: AgentCallbacks | EventEmitter
   ) {
-    // Overload: legacy constructor uses DeepSeek for backward compatibility
     if (registryOrConfig instanceof ToolRegistry) {
       this.registry = registryOrConfig
       this.callbacks = _callbacksOrEvents as AgentCallbacks | undefined
@@ -86,20 +102,24 @@ export class Agent {
       this.maxRounds = MAX_TOOL_ROUNDS
       this.systemPrompt = SYSTEM_PROMPT
       this.maxContextTokens = 128_000
-      // Legacy constructor always uses DeepSeek (tests mock streamAndAccumulate)
+      this.planEnabled = false
+      this.planMinSteps = PLAN_MIN_STEPS
+      this.planMaxSteps = PLAN_MAX_STEPS
       this.provider = new DeepSeekProvider({
         apiKey: process.env.DEEPSEEK_API_KEY ?? '',
         baseURL: 'https://api.deepseek.com',
         model: 'deepseek-v4-pro',
       })
     } else {
-      // New constructor with config
       this.registry = registryOrConfig.registry
       this.callbacks = registryOrConfig.callbacks
       this.events = registryOrConfig.events ?? new EventEmitter()
       this.maxRounds = registryOrConfig.maxRounds ?? MAX_TOOL_ROUNDS
       this.systemPrompt = registryOrConfig.systemPrompt ?? SYSTEM_PROMPT
       this.maxContextTokens = registryOrConfig.maxContextTokens ?? 128_000
+      this.planEnabled = registryOrConfig.planning?.enabled ?? PLAN_ENABLED
+      this.planMinSteps = registryOrConfig.planning?.minSteps ?? PLAN_MIN_STEPS
+      this.planMaxSteps = registryOrConfig.planning?.maxSteps ?? PLAN_MAX_STEPS
       this.provider = registryOrConfig.provider ?? createProvider()
     }
 
@@ -120,10 +140,21 @@ export class Agent {
 
   loadMessages(msgs: OpenAI.Chat.ChatCompletionMessageParam[]): void {
     this.messages = msgs
+    this.hasLoadedHistory = true
+  }
+
+  private recordAction(action: string, result: string): void {
+    this.recentActions.push({
+      action,
+      result: result.slice(0, 80),
+      timestamp: Date.now(),
+    })
+    if (this.recentActions.length > 10) {
+      this.recentActions.shift()
+    }
   }
 
   private estimateTokens(): number {
-    // Rough estimate: ~4 chars per token for English text
     let chars = 0
     for (const msg of this.messages) {
       if (typeof msg.content === 'string') chars += msg.content.length
@@ -135,11 +166,8 @@ export class Agent {
     const threshold = Math.floor(this.maxContextTokens * this.contextThresholdRatio)
     const estimated = this.estimateTokens()
     if (estimated <= threshold) return
-
-    // Keep system message (index 0) + remove oldest non-system messages
     const system = this.messages[0]
     const rest = this.messages.slice(1)
-    // Keep the most recent 60% of non-system messages
     const keep = Math.max(2, Math.floor(rest.length * 0.6))
     const trimmed = rest.slice(-keep)
     this.messages = [system, ...trimmed]
@@ -188,15 +216,61 @@ export class Agent {
     }
   }
 
-  async run(userInput: string): Promise<string> {
-    this.totalRounds = 0
-    logger.info('run start', { inputLen: userInput.length, provider: this.provider.model })
-    this.messages.push({ role: 'user', content: userInput })
-    this.events.emit(AgentEvent.RUN_START, { input: userInput })
-    this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
+  private async executeTools(response: StreamedResponse): Promise<void> {
+    for (const tc of response.toolCalls) {
+      const tool = this.registry.get(tc.name)
+      this.events.emit(AgentEvent.TOOL_START, { id: tc.id, name: tc.name })
 
-    const tools = this.registry.getDefinitions()
+      if (tool?.requiresConfirm) {
+        this.events.emit(AgentEvent.TOOL_CONFIRM, { name: tc.name, args: tc.arguments })
+        if (this.callbacks?.onConfirm) {
+          const approved = await this.callbacks.onConfirm(tc.name, tc.arguments)
+          if (!approved) {
+            this.messages.push({
+              role: 'tool',
+              tool_call_id: tc.id,
+              content: '[Rejected by user]',
+            } as any)
+            this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
+            this.events.emit(AgentEvent.MESSAGE_TOOL, {
+              toolCallId: tc.id,
+              content: '[Rejected by user]',
+            })
+            this.callbacks?.onToolResult?.(tc, '[Rejected by user]')
+            continue
+          }
+        }
+      }
 
+      const toolStart = Date.now()
+      try {
+        const result = await this.registry.execute(tc.name, tc.arguments)
+        const toolDuration = Date.now() - toolStart
+        this.recordAction(`${tc.name} ${JSON.stringify(tc.arguments)}`, result)
+
+        this.messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: result,
+        } as any)
+
+        this.events.emit(AgentEvent.TOOL_RESULT, {
+          id: tc.id,
+          name: tc.name,
+          result,
+          duration: toolDuration,
+        })
+        this.events.emit(AgentEvent.MESSAGE_TOOL, { toolCallId: tc.id, content: result })
+        this.callbacks?.onToolResult?.(tc, result)
+      } catch (e) {
+        const error = e instanceof Error ? e : new Error(String(e))
+        this.events.emit(AgentEvent.TOOL_ERROR, { id: tc.id, name: tc.name, error })
+      }
+    }
+  }
+
+  // ── Core execution loop: LLM call → detect tools → execute → repeat ──
+  private async executionLoop(tools: Record<string, unknown>[]): Promise<string> {
     for (let round = 1; round <= this.maxRounds; round++) {
       this.totalRounds = round
       this.events.emit(AgentEvent.ROUND_START, { round })
@@ -234,25 +308,14 @@ export class Agent {
           this.events.emit(AgentEvent.REASONING_END, { fullText: response.reasoning })
         }
 
-        // ── Build assistant message ──
         const assistantMsg: Record<string, unknown> = { role: 'assistant' }
-
-        if (response.content) {
-          assistantMsg.content = response.content
-        }
-
-        if (response.reasoning) {
-          ;(assistantMsg as any).reasoning_content = response.reasoning
-        }
-
+        if (response.content) assistantMsg.content = response.content
+        if (response.reasoning) (assistantMsg as any).reasoning_content = response.reasoning
         if (response.toolCalls.length > 0) {
           assistantMsg.tool_calls = response.toolCalls.map((tc) => ({
             id: tc.id,
             type: 'function',
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments),
-            },
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
           }))
         }
 
@@ -262,67 +325,12 @@ export class Agent {
           toolCalls: response.toolCalls,
         })
 
-        // ── No tool calls → final answer ──
         if (response.toolCalls.length === 0) {
           this.events.emit(AgentEvent.ROUND_END, { round })
-          this.events.emit(AgentEvent.RUN_END, {
-            output: response.content ?? '',
-            totalRounds: this.totalRounds,
-          })
           return response.content
         }
 
-        // ── Execute tools ──
-        for (const tc of response.toolCalls) {
-          const tool = this.registry.get(tc.name)
-          this.events.emit(AgentEvent.TOOL_START, { id: tc.id, name: tc.name })
-
-          // Check confirmation
-          if (tool?.requiresConfirm) {
-            this.events.emit(AgentEvent.TOOL_CONFIRM, { name: tc.name, args: tc.arguments })
-            if (this.callbacks?.onConfirm) {
-              const approved = await this.callbacks.onConfirm(tc.name, tc.arguments)
-              if (!approved) {
-                this.messages.push({
-                  role: 'tool',
-                  tool_call_id: tc.id,
-                  content: '[Rejected by user]',
-                } as any)
-                this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
-                this.events.emit(AgentEvent.MESSAGE_TOOL, {
-                  toolCallId: tc.id,
-                  content: '[Rejected by user]',
-                })
-                this.callbacks?.onToolResult?.(tc, '[Rejected by user]')
-                continue
-              }
-            }
-          }
-
-          const toolStart = Date.now()
-          try {
-            const result = await this.registry.execute(tc.name, tc.arguments)
-            const toolDuration = Date.now() - toolStart
-
-            this.messages.push({
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: result,
-            } as any)
-
-            this.events.emit(AgentEvent.TOOL_RESULT, {
-              id: tc.id,
-              name: tc.name,
-              result,
-              duration: toolDuration,
-            })
-            this.events.emit(AgentEvent.MESSAGE_TOOL, { toolCallId: tc.id, content: result })
-            this.callbacks?.onToolResult?.(tc, result)
-          } catch (e) {
-            const error = e instanceof Error ? e : new Error(String(e))
-            this.events.emit(AgentEvent.TOOL_ERROR, { id: tc.id, name: tc.name, error })
-          }
-        }
+        await this.executeTools(response)
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e))
         this.events.emit(AgentEvent.LLM_ERROR, { error })
@@ -333,9 +341,90 @@ export class Agent {
     }
 
     this.events.emit(AgentEvent.MAX_ROUNDS, { maxRounds: this.maxRounds })
-    const output =
-      "I've reached the maximum number of tool-calling rounds. Please refine your question or ask me to continue."
-    this.events.emit(AgentEvent.RUN_END, { output, totalRounds: this.totalRounds })
-    return output
+    return "I've reached the maximum number of tool-calling rounds. Please refine your question or ask me to continue."
+  }
+
+  // ── Plan-based execution ──
+  private async executePlan(tools: Record<string, unknown>[]): Promise<string> {
+    while (this.taskManager && !this.taskManager.isComplete()) {
+      const step = this.taskManager.getCurrentStep()
+      if (!step) break
+
+      const progress = this.taskManager.getProgress()
+      logger.info('plan step start', {
+        stepId: step.id,
+        description: step.description,
+        progress: `${progress.done}/${progress.total}`,
+      })
+
+      this.messages.push({
+        role: 'user',
+        content: `Execute this task step: ${step.description}\n\nPlan progress: ${progress.done}/${progress.total} steps done.`,
+      } as any)
+
+      const stepResult = await this.executionLoop(tools)
+      this.taskManager.markStepDone(step.id, stepResult)
+      logger.info('plan step done', { stepId: step.id, resultLen: stepResult.length })
+    }
+
+    // All steps done — synthesize final answer
+    if (this.taskManager) {
+      this.messages.push({
+        role: 'user',
+        content: `All plan steps are complete. Summarize the results for the user.\n\n${this.taskManager.getPlanSummary()}`,
+      } as any)
+      return this.executionLoop(tools)
+    }
+
+    return 'Plan execution complete.'
+  }
+
+  async run(userInput: string): Promise<string> {
+    this.totalRounds = 0
+    this.recentActions = []
+    logger.info('run start', { inputLen: userInput.length, provider: this.provider.model })
+    this.messages.push({ role: 'user', content: userInput })
+    this.events.emit(AgentEvent.RUN_START, { input: userInput })
+    this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
+
+    const tools = this.registry.getDefinitions()
+
+    // Phase 0 + 1: Environment perception & planning (if enabled)
+    if (this.planEnabled) {
+      try {
+        const context = await buildAgentContext(
+          this.registry,
+          {
+            maxRounds: this.maxRounds,
+            maxContextTokens: this.maxContextTokens,
+            currentTokensUsed: this.totalTokensUsed,
+          },
+          this.provider,
+          this.messages.length,
+          this.hasLoadedHistory,
+          this.recentActions
+        )
+
+        const planSteps = await generatePlan(userInput, context, this.provider, this.planMaxSteps)
+
+        if (planSteps.length >= this.planMinSteps) {
+          logger.info('plan generated', {
+            steps: planSteps.length,
+            descriptions: planSteps.map((s) => s.description),
+          })
+          this.taskManager = new TaskManager(planSteps, userInput)
+          const result = await this.executePlan(tools)
+          this.events.emit(AgentEvent.RUN_END, { output: result, totalRounds: this.totalRounds })
+          return result
+        }
+      } catch (e) {
+        logger.warn('planning failed, falling back to standard mode', { error: String(e) })
+      }
+    }
+
+    // Standard execution (existing behavior + fallback)
+    const result = await this.executionLoop(tools)
+    this.events.emit(AgentEvent.RUN_END, { output: result, totalRounds: this.totalRounds })
+    return result
   }
 }
