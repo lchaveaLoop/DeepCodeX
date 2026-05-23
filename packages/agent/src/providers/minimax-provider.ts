@@ -109,18 +109,14 @@ export class MiniMaxProvider implements LLMProvider {
           if (startIdx >= 0) {
             // Emit content before start tag as output
             const before = buffer.substring(0, startIdx)
-            for (const char of before) {
-              contentParts.push(char)
-              callbacks?.onToken?.(char)
-            }
+            contentParts.push(before)
+            callbacks?.onToken?.(before)
             buffer = buffer.substring(startIdx + THINK_START.length)
             inThinking = true
           } else {
             // No start tag found, emit buffer as output and clear
-            for (const char of buffer) {
-              contentParts.push(char)
-              callbacks?.onToken?.(char)
-            }
+            contentParts.push(buffer)
+            callbacks?.onToken?.(buffer)
             buffer = ''
             break
           }
@@ -146,10 +142,8 @@ export class MiniMaxProvider implements LLMProvider {
       reasoningParts.push(buffer)
       callbacks?.onReasoning?.(buffer)
     } else if (buffer.length > 0) {
-      for (const char of buffer) {
-        contentParts.push(char)
-        callbacks?.onToken?.(char)
-      }
+      contentParts.push(buffer)
+      callbacks?.onToken?.(buffer)
     }
 
     const toolCalls: StreamedResponse['toolCalls'] = []

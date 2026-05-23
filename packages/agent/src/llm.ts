@@ -71,18 +71,14 @@ export async function streamAndAccumulate(
     // ── Reasoning (DeepSeek-specific) ──
     const reasoning: string = delta.reasoning_content ?? ''
     if (reasoning) {
-      for (const char of reasoning) {
-        reasoningParts.push(char)
-        callbacks?.onReasoning?.(char)
-      }
+      reasoningParts.push(reasoning)
+      callbacks?.onReasoning?.(reasoning)
     }
 
     // ── Content ──
     if (delta.content) {
-      for (const char of delta.content) {
-        contentParts.push(char)
-        callbacks?.onToken?.(char)
-      }
+      contentParts.push(delta.content)
+      callbacks?.onToken?.(delta.content)
     }
 
     // ── Tool calls (incremental fragments) ──
