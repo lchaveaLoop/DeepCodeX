@@ -43,6 +43,16 @@ describe("Agent loop", () => {
 
     expect(result).toBe("Hello, world!");
     expect(mockStream).toHaveBeenCalledTimes(1);
+    expect(agent.currentRun?.status).toBe("completed");
+    expect(agent.currentRun?.output).toBe("Hello, world!");
+    expect(agent.currentRun?.steps.map((s) => s.kind)).toEqual([
+      "user_message",
+      "round_start",
+      "llm_request",
+      "llm_response",
+      "assistant_message",
+      "final",
+    ]);
   });
 
   it("single round tool call", async () => {
@@ -63,6 +73,14 @@ describe("Agent loop", () => {
 
     expect(result).toBe("File contains: print('hi')");
     expect(mockStream).toHaveBeenCalledTimes(2);
+    expect(agent.currentRun?.status).toBe("completed");
+    expect(agent.currentRun?.steps.map((s) => s.kind)).toContain("tool_call");
+    expect(agent.currentRun?.steps.map((s) => s.kind)).toContain("tool_result");
+    expect(agent.currentRun?.steps.find((s) => s.kind === "tool_call")).toMatchObject({
+      toolCallId: "c1",
+      toolName: "read_file",
+      round: 1,
+    });
   });
 
   it("multi round tool calls", async () => {
@@ -117,6 +135,9 @@ describe("Agent loop", () => {
 
     expect(result.toLowerCase()).toContain("maximum");
     expect(mockStream.mock.calls.length).toBe(config.MAX_TOOL_ROUNDS);
+    expect(agent.currentRun?.status).toBe("max_rounds");
+    expect(agent.currentRun?.totalRounds).toBe(config.MAX_TOOL_ROUNDS);
+    expect(agent.currentRun?.steps.at(-1)?.kind).toBe("max_rounds");
   });
 
   it("passes reasoning_content back in assistant message", async () => {
@@ -188,6 +209,7 @@ describe("Agent loop", () => {
 
     expect(result).toBe("OK, I won't write that.");
     await expect(fs.access(path.join(root, "x.txt"))).rejects.toThrow();
+    expect(agent.currentRun?.steps.map((s) => s.kind)).toContain("tool_rejected");
   });
 });
 

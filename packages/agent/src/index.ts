@@ -9,6 +9,7 @@ export type { ToolDef } from './tools/index.js'
 
 export { saveSession, loadSession } from './session.js'
 export type { SessionMessage } from './session.js'
+export type { AgentRunState, RunStatus, RunStep, RunStepKind } from './runtime.js'
 
 export * as config from './config.js'
 

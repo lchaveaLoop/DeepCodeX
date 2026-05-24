@@ -7,6 +7,7 @@ import type OpenAI from 'openai'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
 import { MiniMaxProvider } from './providers/minimax-provider.js'
+import type { AgentRunState, RunStatus, RunStepKind } from './runtime.js'
 
 function createProvider() {
   const config = getProviderConfig()
@@ -44,6 +45,7 @@ export class Agent {
   private maxRounds: number
   private systemPrompt: string
   private totalRounds = 0
+  private currentRunState: AgentRunState | null = null
 
   constructor(config: AgentConfig)
   constructor(registry: ToolRegistry, callbacks?: AgentCallbacks)
@@ -89,8 +91,60 @@ export class Agent {
     return this.provider
   }
 
+  get currentRun(): AgentRunState | null {
+    return this.currentRunState
+  }
+
   loadMessages(msgs: OpenAI.Chat.ChatCompletionMessageParam[]): void {
     this.messages = msgs
+  }
+
+  private startRun(input: string): AgentRunState {
+    const timestamp = new Date().toISOString()
+    this.currentRunState = {
+      id: `run_${Date.now()}`,
+      input,
+      status: 'running',
+      startedAt: timestamp,
+      totalRounds: 0,
+      steps: [],
+    }
+    return this.currentRunState
+  }
+
+  private finishRun(status: RunStatus, output?: string, error?: Error): void {
+    if (!this.currentRunState) return
+
+    this.currentRunState.status = status
+    this.currentRunState.totalRounds = this.totalRounds
+    this.currentRunState.endedAt = new Date().toISOString()
+    if (output !== undefined) {
+      this.currentRunState.output = output
+    }
+    if (error) {
+      this.currentRunState.error = error.message
+    }
+  }
+
+  private recordStep(
+    kind: RunStepKind,
+    options: {
+      round?: number
+      toolCallId?: string
+      toolName?: string
+      data?: Record<string, unknown>
+    } = {}
+  ): void {
+    if (!this.currentRunState) return
+
+    const index = this.currentRunState.steps.length
+    this.currentRunState.steps.push({
+      id: `step_${index + 1}`,
+      index,
+      kind,
+      timestamp: new Date().toISOString(),
+      ...options,
+    })
   }
 
   private createStreamCallbacks(): StreamCallbacks {
@@ -116,7 +170,9 @@ export class Agent {
 
   async run(userInput: string): Promise<string> {
     this.totalRounds = 0
+    this.startRun(userInput)
     this.messages.push({ role: 'user', content: userInput })
+    this.recordStep('user_message', { data: { content: userInput } })
     this.events.emit(AgentEvent.RUN_START, { input: userInput })
     this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
 
@@ -124,7 +180,13 @@ export class Agent {
 
     for (let round = 1; round <= this.maxRounds; round++) {
       this.totalRounds = round
+      this.currentRunState!.totalRounds = round
+      this.recordStep('round_start', { round })
       this.events.emit(AgentEvent.ROUND_START, { round })
+      this.recordStep('llm_request', {
+        round,
+        data: { messageCount: this.messages.length, toolCount: tools.length },
+      })
       this.events.emit(AgentEvent.LLM_REQUEST, {
         messageCount: this.messages.length,
         toolCount: tools.length,
@@ -140,6 +202,15 @@ export class Agent {
         )
 
         const duration = Date.now() - startTime
+        this.recordStep('llm_response', {
+          round,
+          data: {
+            hasContent: !!response.content,
+            hasToolCalls: response.toolCalls.length > 0,
+            hasReasoning: !!response.reasoning,
+            duration,
+          },
+        })
         this.events.emit(AgentEvent.LLM_RESPONSE, {
           hasContent: !!response.content,
           hasToolCalls: response.toolCalls.length > 0,
@@ -174,6 +245,13 @@ export class Agent {
         }
 
         this.messages.push(assistantMsg)
+        this.recordStep('assistant_message', {
+          round,
+          data: {
+            content: response.content ?? null,
+            toolCallCount: response.toolCalls.length,
+          },
+        })
         this.events.emit(AgentEvent.MESSAGE_ASSISTANT, {
           content: response.content ?? null,
           toolCalls: response.toolCalls,
@@ -182,6 +260,8 @@ export class Agent {
         // ── No tool calls → final answer ──
         if (response.toolCalls.length === 0) {
           this.events.emit(AgentEvent.ROUND_END, { round })
+          this.recordStep('final', { round, data: { output: response.content ?? '' } })
+          this.finishRun('completed', response.content ?? '')
           this.events.emit(AgentEvent.RUN_END, {
             output: response.content ?? '',
             totalRounds: this.totalRounds,
@@ -192,6 +272,12 @@ export class Agent {
         // ── Execute tools ──
         for (const tc of response.toolCalls) {
           const tool = this.registry.get(tc.name)
+          this.recordStep('tool_call', {
+            round,
+            toolCallId: tc.id,
+            toolName: tc.name,
+            data: { arguments: tc.arguments },
+          })
           this.events.emit(AgentEvent.TOOL_START, { id: tc.id, name: tc.name })
 
           // Check confirmation
@@ -206,6 +292,11 @@ export class Agent {
                   content: '[Rejected by user]',
                 }
                 this.messages.push(rejectedMessage)
+                this.recordStep('tool_rejected', {
+                  round,
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                })
                 this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
                 this.events.emit(AgentEvent.MESSAGE_TOOL, {
                   toolCallId: tc.id,
@@ -228,6 +319,12 @@ export class Agent {
               content: result,
             }
             this.messages.push(toolMessage)
+            this.recordStep('tool_result', {
+              round,
+              toolCallId: tc.id,
+              toolName: tc.name,
+              data: { result, duration: toolDuration },
+            })
 
             this.events.emit(AgentEvent.TOOL_RESULT, {
               id: tc.id,
@@ -239,11 +336,19 @@ export class Agent {
             this.callbacks?.onToolResult?.(tc, result)
           } catch (e) {
             const error = e instanceof Error ? e : new Error(String(e))
+            this.recordStep('tool_error', {
+              round,
+              toolCallId: tc.id,
+              toolName: tc.name,
+              data: { error: error.message },
+            })
             this.events.emit(AgentEvent.TOOL_ERROR, { id: tc.id, name: tc.name, error })
           }
         }
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e))
+        this.recordStep('error', { round, data: { error: error.message } })
+        this.finishRun('failed', undefined, error)
         this.events.emit(AgentEvent.LLM_ERROR, { error })
         throw error
       }
@@ -254,6 +359,8 @@ export class Agent {
     this.events.emit(AgentEvent.MAX_ROUNDS, { maxRounds: this.maxRounds })
     const output =
       "I've reached the maximum number of tool-calling rounds. Please refine your question or ask me to continue."
+    this.recordStep('max_rounds', { data: { maxRounds: this.maxRounds, output } })
+    this.finishRun('max_rounds', output)
     this.events.emit(AgentEvent.RUN_END, { output, totalRounds: this.totalRounds })
     return output
   }
