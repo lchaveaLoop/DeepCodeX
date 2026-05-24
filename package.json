@@ -1,12 +1,17 @@
 {
   "name": "fagent",
   "private": true,
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "packages/agent",
+    "packages/cli"
+  ],
   "scripts": {
-    "dev": "pnpm --filter @fagent/cli dev",
-    "build": "pnpm -r build",
-    "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
+    "dev": "npm run build -w @fagent/agent && npm run dev -w @fagent/cli",
+    "build": "npm run build -w @fagent/agent && npm run build -w @fagent/cli",
+    "typecheck": "npm run typecheck -w @fagent/agent && npm run build -w @fagent/agent && npm run typecheck -w @fagent/cli",
+    "test": "npm run test -w @fagent/agent",
+    "lint": "npm run lint -w @fagent/agent && npm run lint -w @fagent/cli",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "install-hooks": "husky install"

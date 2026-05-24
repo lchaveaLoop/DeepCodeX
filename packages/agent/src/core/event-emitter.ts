@@ -15,11 +15,11 @@ export class EventEmitter {
     return () => this.off(event, handler)
   }
 
-  off(event: string, handler: EventHandler): void {
-    this.listeners.get(event)?.delete(handler)
+  off<T = unknown>(event: string, handler: EventHandler<T>): void {
+    this.listeners.get(event)?.delete(handler as EventHandler)
   }
 
-  emit(event: string, _data?: unknown): void {
+  emit(event: string, data?: unknown): void {
     const onceHandler = this.onceHandlers.get(event)
     if (onceHandler) {
       this.onceHandlers.delete(event)

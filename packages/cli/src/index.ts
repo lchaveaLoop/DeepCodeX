@@ -2,8 +2,14 @@
 /** DeepSeek Agent — interactive CLI (TypeScript). */
 
 import * as readline from 'node:readline';
-import { config, Agent, createRegistry, saveSession, loadSession } from '../../agent/src/index.ts';
-import type { ToolCall } from '../../agent/src/llm.ts';
+import {
+  config,
+  Agent,
+  createRegistry,
+  saveSession,
+  loadSession,
+  type ToolCall,
+} from '@fagent/agent';
 
 // ═══════════════════════════════════════════════════
 // ANSI styling

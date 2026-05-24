@@ -2,6 +2,20 @@
 
 import OpenAI from 'openai'
 import type { LLMConfig, LLMProvider, LLMResponse } from './llm-provider.js'
+import type { StreamCallbacks, StreamedResponse, ToolCall } from '../llm.js'
+
+interface OpenAIStreamDelta {
+  content?: string | null
+  reasoning_content?: string | null
+  tool_calls?: Array<{
+    index: number
+    id?: string
+    function?: {
+      name?: string
+      arguments?: string
+    }
+  }>
+}
 
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI
@@ -49,7 +63,11 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async stream(messages: unknown[], tools: unknown[], _callbacks?: unknown): Promise<LLMResponse> {
+  async stream(
+    messages: unknown[],
+    tools: unknown[],
+    callbacks?: StreamCallbacks
+  ): Promise<StreamedResponse> {
     const stream = await this.client.chat.completions.create({
       model: this._model,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
@@ -57,33 +75,72 @@ export class OpenAIProvider implements LLMProvider {
       stream: true,
     })
 
-    let content = ''
-    const toolCalls: LLMResponse['toolCalls'] = []
+    const contentParts: string[] = []
+    const reasoningParts: string[] = []
+    const tcBuf = new Map<number, { id: string; name: string; argsFrags: string[] }>()
 
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta
-      if (delta?.content) {
-        content += delta.content
+      if (!chunk.choices?.length) continue
+
+      const delta = chunk.choices[0].delta as OpenAIStreamDelta
+
+      // ── Reasoning (some OpenAI-compatible APIs support it) ──
+      const reasoning: string = delta.reasoning_content ?? ''
+      if (reasoning) {
+        for (const char of reasoning) {
+          reasoningParts.push(char)
+          callbacks?.onReasoning?.(char)
+        }
       }
-      if (delta?.tool_calls) {
+
+      // ── Content ──
+      const content = delta.content ?? ''
+      if (content) {
+        for (const char of content) {
+          contentParts.push(char)
+          callbacks?.onToken?.(char)
+        }
+      }
+
+      // ── Tool calls (incremental fragments) ──
+      if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const idx = tc.index ?? 0
-          if (!toolCalls[idx]) {
-            toolCalls[idx] = {
-              id: tc.id ?? '',
-              name: tc.function?.name ?? '',
-              arguments: {},
-            }
+          const idx = tc.index as number
+          if (!tcBuf.has(idx)) {
+            tcBuf.set(idx, { id: '', name: '', argsFrags: [] })
           }
-          if (tc.function?.arguments) {
-            toolCalls[idx].arguments = JSON.parse(
-              (toolCalls[idx].arguments as any) + tc.function.arguments
-            )
-          }
+          const buf = tcBuf.get(idx)!
+          if (tc.id) buf.id = tc.id
+          if (tc.function?.name) buf.name = tc.function.name
+          if (tc.function?.arguments) buf.argsFrags.push(tc.function.arguments)
         }
       }
     }
 
-    return { content, reasoning: null, toolCalls }
+    // ── Assemble tool calls ──
+    const toolCalls: ToolCall[] = []
+    for (const idx of [...tcBuf.keys()].sort()) {
+      const buf = tcBuf.get(idx)!
+      const argsStr = buf.argsFrags.join('')
+      let arguments_: Record<string, unknown> = {}
+      try {
+        arguments_ = argsStr ? JSON.parse(argsStr) : {}
+      } catch {
+        // JSON fragment — skip
+      }
+
+      toolCalls.push({ id: buf.id, name: buf.name, arguments: arguments_ })
+    }
+
+    // Notify callbacks for each assembled tool call
+    for (const tc of toolCalls) {
+      callbacks?.onToolCall?.(tc)
+    }
+
+    return {
+      content: contentParts.join(''),
+      reasoning: reasoningParts.length ? reasoningParts.join('') : null,
+      toolCalls,
+    }
   }
 }

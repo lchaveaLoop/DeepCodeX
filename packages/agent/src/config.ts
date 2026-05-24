@@ -11,7 +11,7 @@ dotenv.config({ path: resolve(projectRoot, '.env') })
 // ── DeepSeek (default) ──
 export const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? ''
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
-export const DEEPSEEK_MODEL = 'deepseek-v4-pro'
+export const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro'
 
 // ── MiniMax ──
 export const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY ?? ''

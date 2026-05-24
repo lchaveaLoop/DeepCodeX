@@ -2,26 +2,7 @@ import { z } from 'zod'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { ToolDef } from './index.js'
-import { getWorkspaceRoot, BLOCKED_PATH_NAMES } from '../config.js'
-
-// ═══════════════════════════════════════════════════
-// Security helpers
-// ═══════════════════════════════════════════════════
-
-function resolvePath(filePath: string): string {
-  return path.resolve(getWorkspaceRoot(), filePath)
-}
-
-function isInsideWorkspace(absPath: string): boolean {
-  const root = getWorkspaceRoot()
-  const rel = path.relative(root, absPath)
-  return !rel.startsWith('..') && !path.isAbsolute(rel)
-}
-
-function isBlocked(absPath: string): boolean {
-  const parts = absPath.split(path.sep)
-  return parts.some((p) => BLOCKED_PATH_NAMES.has(p))
-}
+import { resolvePath, isInsideWorkspace, isBlocked } from './shared.js'
 
 // ═══════════════════════════════════════════════════
 // read_file

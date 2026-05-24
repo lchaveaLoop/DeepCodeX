@@ -8,6 +8,7 @@ export { ToolRegistry, createRegistry } from './tools/index.js'
 export type { ToolDef } from './tools/index.js'
 
 export { saveSession, loadSession } from './session.js'
+export type { SessionMessage } from './session.js'
 
 export * as config from './config.js'
 

@@ -3,13 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "fagent": "./dist/index.js"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "start": "tsx src/index.ts"
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/"
   },
   "dependencies": {
-    "@fagent/agent": "file:../agent",
-    "fagent": "file:../.."
+    "@fagent/agent": "file:../agent"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

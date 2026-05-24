@@ -27,10 +27,23 @@ export interface StreamCallbacks {
   onToolCall?: (_tc: ToolCall) => void
 }
 
+interface StreamDelta {
+  content?: string | null
+  reasoning_content?: string | null
+  tool_calls?: Array<{
+    index: number
+    id?: string
+    function?: {
+      name?: string
+      arguments?: string
+    }
+  }>
+}
+
 export async function streamAndAccumulate(
   client: OpenAI,
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  tools: Record<string, unknown>[],
+  tools: unknown[],
   callbacks?: StreamCallbacks
 ): Promise<StreamedResponse> {
   const contentParts: string[] = []
@@ -39,19 +52,26 @@ export async function streamAndAccumulate(
   // Tool-call accumulation: index → { id, name, argsFrags }
   const tcBuf = new Map<number, { id: string; name: string; argsFrags: string[] }>()
 
-  const stream = await client.chat.completions.create({
+  type DeepSeekStreamParams = OpenAI.Chat.ChatCompletionCreateParamsStreaming & {
+    reasoning_effort?: string
+    extra_body?: unknown
+  }
+
+  const params: DeepSeekStreamParams = {
     model: MODEL,
     messages,
-    tools: tools as any,
+    tools: tools as OpenAI.Chat.ChatCompletionTool[],
     stream: true,
     reasoning_effort: 'high',
     extra_body: { thinking: { type: 'enabled' } },
-  })
+  }
+
+  const stream = await client.chat.completions.create(params)
 
   for await (const chunk of stream) {
     if (!chunk.choices?.length) continue
 
-    const delta = chunk.choices[0].delta as any
+    const delta = chunk.choices[0].delta as StreamDelta
 
     // ── Reasoning (DeepSeek-specific) ──
     const reasoning: string = delta.reasoning_content ?? ''

@@ -3,6 +3,7 @@ import { type StreamCallbacks, type ToolCall } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
 import { AgentEvent } from './core/event-types.js'
+import type OpenAI from 'openai'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
 import { MiniMaxProvider } from './providers/minimax-provider.js'
@@ -28,6 +29,10 @@ export interface AgentConfig {
   maxRounds?: number
   systemPrompt?: string
   provider?: LLMProvider
+}
+
+type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
+  reasoning_content?: string
 }
 
 export class Agent {
@@ -147,14 +152,14 @@ export class Agent {
         }
 
         // ── Build assistant message ──
-        const assistantMsg: Record<string, unknown> = { role: 'assistant' }
+        const assistantMsg: AssistantMessageWithReasoning = { role: 'assistant' }
 
         if (response.content) {
           assistantMsg.content = response.content
         }
 
         if (response.reasoning) {
-          ;(assistantMsg as any).reasoning_content = response.reasoning
+          assistantMsg.reasoning_content = response.reasoning
         }
 
         if (response.toolCalls.length > 0) {
@@ -168,7 +173,7 @@ export class Agent {
           }))
         }
 
-        this.messages.push(assistantMsg as any)
+        this.messages.push(assistantMsg)
         this.events.emit(AgentEvent.MESSAGE_ASSISTANT, {
           content: response.content ?? null,
           toolCalls: response.toolCalls,
@@ -195,11 +200,12 @@ export class Agent {
             if (this.callbacks?.onConfirm) {
               const approved = await this.callbacks.onConfirm(tc.name, tc.arguments)
               if (!approved) {
-                this.messages.push({
+                const rejectedMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
                   role: 'tool',
                   tool_call_id: tc.id,
                   content: '[Rejected by user]',
-                } as any)
+                }
+                this.messages.push(rejectedMessage)
                 this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
                 this.events.emit(AgentEvent.MESSAGE_TOOL, {
                   toolCallId: tc.id,
@@ -216,11 +222,12 @@ export class Agent {
             const result = await this.registry.execute(tc.name, tc.arguments)
             const toolDuration = Date.now() - toolStart
 
-            this.messages.push({
+            const toolMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
               role: 'tool',
               tool_call_id: tc.id,
               content: result,
-            } as any)
+            }
+            this.messages.push(toolMessage)
 
             this.events.emit(AgentEvent.TOOL_RESULT, {
               id: tc.id,

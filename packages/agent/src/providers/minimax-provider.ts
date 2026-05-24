@@ -7,6 +7,18 @@ import OpenAI from 'openai'
 const THINK_START = '</think>'
 const THINK_END = '</think>'
 
+interface MiniMaxStreamDelta {
+  content?: string | null
+  tool_calls?: Array<{
+    index: number
+    id?: string
+    function?: {
+      name?: string
+      arguments?: string
+    }
+  }>
+}
+
 export class MiniMaxProvider implements LLMProvider {
   private client: OpenAI
   private _model: string
@@ -28,7 +40,7 @@ export class MiniMaxProvider implements LLMProvider {
     const response = await this.client.chat.completions.create({
       model: this._model,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: tools as OpenAI.Chat.CompletionTool[],
+      tools: tools as OpenAI.Chat.ChatCompletionTool[],
     })
 
     const choice = response.choices[0]
@@ -72,14 +84,14 @@ export class MiniMaxProvider implements LLMProvider {
     const stream = await this.client.chat.completions.create({
       model: this._model,
       messages: messages as OpenAI.Chat.ChatCompletionMessageParam[],
-      tools: tools as OpenAI.Chat.CompletionTool[],
+      tools: tools as OpenAI.Chat.ChatCompletionTool[],
       stream: true,
     })
 
     for await (const chunk of stream) {
       if (!chunk.choices?.length) continue
 
-      const delta = chunk.choices[0].delta as any
+      const delta = chunk.choices[0].delta as MiniMaxStreamDelta
 
       if (delta?.content) {
         buffer += delta.content
@@ -162,7 +174,13 @@ export class MiniMaxProvider implements LLMProvider {
       } catch {
         // Skip invalid JSON
       }
+
       toolCalls.push({ id: buf.id, name: buf.name, arguments: arguments_ })
+    }
+
+    // Notify callbacks for each assembled tool call
+    for (const tc of toolCalls) {
+      callbacks?.onToolCall?.(tc)
     }
 
     return {

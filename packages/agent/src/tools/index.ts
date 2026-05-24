@@ -19,13 +19,13 @@ export interface ToolDef<Args extends z.ZodTypeAny> {
 import { zodToJsonSchema } from 'zod-to-json-schema'
 
 export class ToolRegistry {
-  private tools = new Map<string, ToolDef<any>>()
+  private tools = new Map<string, ToolDef<z.ZodTypeAny>>()
 
   register<Args extends z.ZodTypeAny>(tool: ToolDef<Args>): void {
-    this.tools.set(tool.name, tool)
+    this.tools.set(tool.name, tool as unknown as ToolDef<z.ZodTypeAny>)
   }
 
-  get(name: string): ToolDef<any> | undefined {
+  get(name: string): ToolDef<z.ZodTypeAny> | undefined {
     return this.tools.get(name)
   }
 
@@ -68,6 +68,8 @@ export class ToolRegistry {
 import { webSearchTool } from './web-search.js'
 import { readFileTool, writeFileTool } from './workspace.js'
 import { runCommandTool } from './shell.js'
+import { listDirectoryTool, directoryTreeTool, globTool, getFileInfoTool } from './filesystem.js'
+import { searchFilesTool, searchContentTool } from './search.js'
 
 export function createRegistry(): ToolRegistry {
   const registry = new ToolRegistry()
@@ -75,5 +77,11 @@ export function createRegistry(): ToolRegistry {
   registry.register(readFileTool)
   registry.register(writeFileTool)
   registry.register(runCommandTool)
+  registry.register(listDirectoryTool)
+  registry.register(directoryTreeTool)
+  registry.register(globTool)
+  registry.register(getFileInfoTool)
+  registry.register(searchFilesTool)
+  registry.register(searchContentTool)
   return registry
 }

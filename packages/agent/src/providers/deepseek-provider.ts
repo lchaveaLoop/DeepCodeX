@@ -4,6 +4,10 @@ import OpenAI from 'openai'
 import type { LLMConfig, LLMProvider, LLMResponse } from './llm-provider.js'
 import { streamAndAccumulate, type StreamCallbacks, type StreamedResponse } from '../llm.js'
 
+type MessageWithReasoning = OpenAI.Chat.ChatCompletionMessage & {
+  reasoning_content?: string | null
+}
+
 export class DeepSeekProvider implements LLMProvider {
   private client: OpenAI
   private _model: string
@@ -34,7 +38,7 @@ export class DeepSeekProvider implements LLMProvider {
 
     return {
       content: msg?.content ?? '',
-      reasoning: (msg as any)?.reasoning_content ?? null,
+      reasoning: (msg as MessageWithReasoning | undefined)?.reasoning_content ?? null,
       toolCalls:
         msg?.tool_calls?.map((tc) => ({
           id: tc.id,
