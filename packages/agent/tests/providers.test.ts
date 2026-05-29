@@ -25,7 +25,6 @@ vi.mock('../src/llm.js', () => ({
 // ── Imports (after mocks) ──
 import { DeepSeekProvider } from '../src/providers/deepseek-provider.js'
 import { OpenAIProvider } from '../src/providers/openai-provider.js'
-import { MiniMaxProvider } from '../src/providers/minimax-provider.js'
 import { createLLMProvider } from '../src/providers/llm-provider.js'
 import type { StreamCallbacks } from '../src/llm.js'
 
@@ -136,7 +135,7 @@ describe('DeepSeekProvider', () => {
         expect.anything(), // client
         msgs,
         tools,
-        callbacks,
+        callbacks
       )
     })
   })
@@ -210,11 +209,7 @@ describe('OpenAIProvider', () => {
       mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
 
       const onToken = vi.fn()
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Hi' }],
-        [],
-        { onToken },
-      )
+      const result = await provider.stream([{ role: 'user', content: 'Hi' }], [], { onToken })
 
       expect(result.content).toBe('Hello world')
       expect(result.toolCalls).toEqual([])
@@ -234,11 +229,10 @@ describe('OpenAIProvider', () => {
 
       const onReasoning = vi.fn()
       const onToken = vi.fn()
-      const result = await provider.stream(
-        [{ role: 'user', content: '?' }],
-        [],
-        { onReasoning, onToken },
-      )
+      const result = await provider.stream([{ role: 'user', content: '?' }], [], {
+        onReasoning,
+        onToken,
+      })
 
       expect(result.reasoning).toBe('Let me think')
       expect(result.content).toBe('Answer: 42')
@@ -264,9 +258,7 @@ describe('OpenAIProvider', () => {
           choices: [
             {
               delta: {
-                tool_calls: [
-                  { index: 0, function: { arguments: '{"path":' } },
-                ],
+                tool_calls: [{ index: 0, function: { arguments: '{"path":' } }],
               },
             },
           ],
@@ -275,9 +267,7 @@ describe('OpenAIProvider', () => {
           choices: [
             {
               delta: {
-                tool_calls: [
-                  { index: 0, function: { arguments: ' "test.txt"}' } },
-                ],
+                tool_calls: [{ index: 0, function: { arguments: ' "test.txt"}' } }],
               },
             },
           ],
@@ -286,11 +276,7 @@ describe('OpenAIProvider', () => {
       mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
 
       const onToolCall = vi.fn()
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Read' }],
-        [],
-        { onToolCall },
-      )
+      const result = await provider.stream([{ role: 'user', content: 'Read' }], [], { onToolCall })
 
       expect(result.toolCalls).toHaveLength(1)
       expect(result.toolCalls[0].id).toBe('tc-1')
@@ -300,7 +286,7 @@ describe('OpenAIProvider', () => {
       // onToolCall fires once per assembled tool call
       expect(onToolCall).toHaveBeenCalledTimes(1)
       expect(onToolCall).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'tc-1', name: 'read_file' }),
+        expect.objectContaining({ id: 'tc-1', name: 'read_file' })
       )
     })
 
@@ -312,10 +298,7 @@ describe('OpenAIProvider', () => {
       ]
       mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
 
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Hi' }],
-        [],
-      )
+      const result = await provider.stream([{ role: 'user', content: 'Hi' }], [])
 
       expect(result.content).toBe('final')
     })
@@ -326,9 +309,7 @@ describe('OpenAIProvider', () => {
           choices: [
             {
               delta: {
-                tool_calls: [
-                  { index: 0, id: 'tc-1', function: { name: 'ping', arguments: '' } },
-                ],
+                tool_calls: [{ index: 0, id: 'tc-1', function: { name: 'ping', arguments: '' } }],
               },
             },
           ],
@@ -336,10 +317,7 @@ describe('OpenAIProvider', () => {
       ]
       mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
 
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Ping' }],
-        [],
-      )
+      const result = await provider.stream([{ role: 'user', content: 'Ping' }], [])
 
       expect(result.toolCalls).toHaveLength(1)
       expect(result.toolCalls[0].arguments).toEqual({})
@@ -349,155 +327,6 @@ describe('OpenAIProvider', () => {
   describe('model', () => {
     it('returns the configured model', () => {
       expect(provider.model).toBe('gpt-4')
-    })
-  })
-})
-
-// ── MiniMaxProvider ──
-
-describe('MiniMaxProvider', () => {
-  const provider = new MiniMaxProvider({
-    apiKey: 'test-mm-key',
-    baseURL: 'https://api.minimax.chat/v1',
-    model: 'abab6.5s-chat',
-  })
-
-  describe('chat()', () => {
-    it('strips think tags from content', async () => {
-      mockCreate.mockResolvedValueOnce({
-        choices: [
-          {
-            message: {
-              content: '</think>Let me calculate</think>The answer is 42',
-            },
-          },
-        ],
-      })
-
-      const result = await provider.chat([{ role: 'user', content: '?' }])
-
-      // Both opening and closing think tags are stripped
-      expect(result.content).toBe('Let me calculateThe answer is 42')
-      expect(result.reasoning).toBeNull()
-    })
-  })
-
-  describe('stream()', () => {
-    it('separates reasoning (think tags) from content and fires callbacks', async () => {
-      const chunks: DeltaChunk[] = [
-        { choices: [{ delta: { content: '</think>' } }] },
-        { choices: [{ delta: { content: 'cal' } }] },
-        { choices: [{ delta: { content: 'culating' } }] },
-        { choices: [{ delta: { content: '</think>' } }] },
-        { choices: [{ delta: { content: 'Ans' } }] },
-        { choices: [{ delta: { content: 'wer: 42' } }] },
-      ]
-      mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
-
-      const onToken = vi.fn()
-      const onReasoning = vi.fn()
-      const result = await provider.stream(
-        [{ role: 'user', content: '?' }],
-        [],
-        { onToken, onReasoning },
-      )
-
-      expect(result.reasoning).toBe('calculating')
-      expect(result.content).toBe('Answer: 42')
-      // reasoning chars should fire callback
-      // MiniMaxProvider emits reasoning per buffer chunk, not char-by-char
-      expect(onReasoning).toHaveBeenCalledTimes(3)
-      expect(onToken).toHaveBeenCalledTimes('Answer: 42'.length)
-    })
-
-    it('handles no think tags — all content, no reasoning', async () => {
-      const chunks: DeltaChunk[] = [
-        { choices: [{ delta: { content: 'Hello' } }] },
-        { choices: [{ delta: { content: ' world' } }] },
-      ]
-      mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
-
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Hi' }],
-        [],
-      )
-
-      expect(result.content).toBe('Hello world')
-      expect(result.reasoning).toBeNull()
-    })
-
-    it('handles unclosed think tag — trailing content becomes reasoning', async () => {
-      const chunks: DeltaChunk[] = [
-        { choices: [{ delta: { content: '</think>' } }] },
-        { choices: [{ delta: { content: 'unclosed' } }] },
-      ]
-      mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
-
-      const result = await provider.stream(
-        [{ role: 'user', content: '?' }],
-        [],
-      )
-
-      expect(result.content).toBe('')
-      expect(result.reasoning).toBe('unclosed')
-    })
-
-    it('assembles incremental tool_calls', async () => {
-      const chunks: DeltaChunk[] = [
-        {
-          choices: [
-            {
-              delta: {
-                tool_calls: [
-                  { index: 0, id: 'mm-tc', function: { name: 'search', arguments: '' } },
-                ],
-              },
-            },
-          ],
-        },
-        {
-          choices: [
-            {
-              delta: {
-                tool_calls: [
-                  { index: 0, function: { arguments: '{"q":"weath' } },
-                ],
-              },
-            },
-          ],
-        },
-        {
-          choices: [
-            {
-              delta: {
-                tool_calls: [
-                  { index: 0, function: { arguments: 'er"}' } },
-                ],
-              },
-            },
-          ],
-        },
-      ]
-      mockCreate.mockResolvedValueOnce(asyncIterable(chunks))
-
-      const onToolCall = vi.fn()
-      const result = await provider.stream(
-        [{ role: 'user', content: 'Search' }],
-        [],
-        { onToolCall },
-      )
-
-      expect(result.toolCalls).toHaveLength(1)
-      expect(result.toolCalls[0].id).toBe('mm-tc')
-      expect(result.toolCalls[0].name).toBe('search')
-      expect(result.toolCalls[0].arguments).toEqual({ q: 'weather' })
-      expect(onToolCall).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  describe('model', () => {
-    it('returns the configured model', () => {
-      expect(provider.model).toBe('abab6.5s-chat')
     })
   })
 })
@@ -514,16 +343,7 @@ describe('createLLMProvider', () => {
     expect(provider).toBeInstanceOf(DeepSeekProvider)
   })
 
-  it('creates MiniMaxProvider for minimax baseURL', async () => {
-    const provider = await createLLMProvider({
-      apiKey: 'key',
-      baseURL: 'https://api.minimax.chat/v1',
-      model: 'mm-model',
-    })
-    expect(provider).toBeInstanceOf(MiniMaxProvider)
-  })
-
-  it('creates OpenAIProvider for other baseURLs', async () => {
+  it('creates OpenAIProvider for non-DeepSeek baseURLs', async () => {
     const provider = await createLLMProvider({
       apiKey: 'key',
       baseURL: 'https://api.openai.com/v1',

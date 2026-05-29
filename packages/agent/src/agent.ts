@@ -1,4 +1,4 @@
-import { MAX_TOOL_ROUNDS, SYSTEM_PROMPT, getProviderConfig, DEFAULT_PROVIDER } from './config.js'
+import { MAX_TOOL_ROUNDS, SYSTEM_PROMPT, getProviderConfig } from './config.js'
 import { type StreamCallbacks, type ToolCall } from './llm.js'
 import { ToolRegistry } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
@@ -6,15 +6,10 @@ import { AgentEvent } from './core/event-types.js'
 import type OpenAI from 'openai'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
-import { MiniMaxProvider } from './providers/minimax-provider.js'
 import type { AgentRunState, RunStatus, RunStepKind } from './runtime.js'
 
 function createProvider() {
-  const config = getProviderConfig()
-  if (DEFAULT_PROVIDER === 'minimax') {
-    return new MiniMaxProvider(config)
-  }
-  return new DeepSeekProvider(config)
+  return new DeepSeekProvider(getProviderConfig())
 }
 
 export interface AgentCallbacks extends StreamCallbacks {

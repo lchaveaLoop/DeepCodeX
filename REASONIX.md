@@ -3,7 +3,7 @@
 ## Stack
 
 - **Language**: TypeScript 5.7 (ESM modules)
-- **Model**: DeepSeek v4-pro via `openai` SDK, native function-calling (`tools`)
+- **Model**: DeepSeek v4-pro by default via `openai` SDK; generic OpenAI-compatible providers remain available through `OpenAIProvider`
 - **Validation**: Zod — tool args schemas → JSON Schema + runtime validation
 - **Streaming**: real-time `stream=True` + incremental `tool_calls` assembly
 - **Testing**: Vitest
@@ -15,9 +15,10 @@
 
 | Dir/File                                 | Purpose                                                                         |
 | ---------------------------------------- | ------------------------------------------------------------------------------- |
-| `packages/agent/src/config.ts`           | `.env` loader, `MODEL`, `MAX_TOOL_ROUNDS`, `WORKSPACE_ROOT`                     |
+| `packages/agent/src/config.ts`           | `.env` loader, DeepSeek model config, `MAX_TOOL_ROUNDS`, `WORKSPACE_ROOT`       |
 | `packages/agent/src/llm.ts`              | `streamAndAccumulate()` — streaming + tool_calls fragment assembly              |
 | `packages/agent/src/agent.ts`            | `Agent` class — `run()` loop: call model → detect tool_calls → execute → repeat |
+| `packages/agent/src/providers/`          | `LLMProvider`, `DeepSeekProvider`, and generic `OpenAIProvider`                 |
 | `packages/agent/src/tools/index.ts`      | `ToolRegistry` + `ToolDef` interface                                            |
 | `packages/agent/src/tools/workspace.ts`  | `read_file`, `write_file`                                                       |
 | `packages/agent/src/tools/shell.ts`      | `run_command` (needs user confirm, output truncated at 2000 chars)              |
@@ -99,6 +100,7 @@ chore: cleanup configuration
 - **Tool = `{ def, handler }` in registry** — registration happens in each `tools/*.ts`
 - **Tool args validated at registry.execute()** — Zod catches bad args before handler runs
 - **Destructive tools flagged `requiresConfirm: true`** — agent loop prompts user `[y/N]` before execution
+- **Provider selection** — default agent construction uses DeepSeek; custom OpenAI-compatible providers can be passed through `AgentConfig.provider` or `createLLMProvider()`
 - **Streaming state machine in `llm.ts`** — `tcBuf[index]` accumulates fragments across chunks, `JSON.parse` assembles final args
 - **ANSI colors** — dim gray for reasoning, cyan for tool names, yellow for confirm prompts, green for user prompt
 

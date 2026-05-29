@@ -1,6 +1,6 @@
 # FAgent — DeepSeek Code Agent
 
-专为 DeepSeek 模型定制的代码智能体，支持 **CLI 终端** 和 **Electron 桌面** 两种运行模式。
+专为 DeepSeek 模型定制的代码智能体，当前提供 **CLI 终端** 运行模式，并保留通用 OpenAI-compatible Provider 扩展点。
 
 ## 快速开始
 
@@ -82,6 +82,7 @@ packages/
 │   │   ├── llm.ts         # 流式 API 调用
 │   │   ├── agent.ts       # Agent 循环
 │   │   ├── session.ts     # 会话持久化
+│   │   ├── providers/     # DeepSeek + OpenAI-compatible Provider
 │   │   └── tools/
 │   │       ├── web-search.ts
 │   │       ├── workspace.ts
@@ -104,7 +105,8 @@ cd packages/agent && npx vitest run
 ## 技术栈
 
 - **TypeScript 5.7** — ESM 模块
-- **DeepSeek v4-pro** — 通过 openai SDK
+- **DeepSeek v4-pro** — 默认模型，通过 openai SDK
+- **OpenAI-compatible Provider** — 用于接入兼容 Chat Completions 的模型服务
 - **Zod** — 工具参数校验 + JSON Schema
 - **tsx** — 直接运行 TypeScript（无需编译）
 - **Vitest** — 测试框架

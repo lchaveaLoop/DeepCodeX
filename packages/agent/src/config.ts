@@ -13,31 +13,14 @@ export const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY ?? ''
 export const DEEPSEEK_BASE_URL = 'https://api.deepseek.com'
 export const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro'
 
-// ── MiniMax ──
-export const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY ?? ''
-export const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL ?? 'https://api.minimax.chat/v1'
-export const MINIMAX_MODEL = process.env.MINIMAX_MODEL ?? 'abab6.5s-chat'
-
 // ── Default Provider Config ──
-export const DEFAULT_PROVIDER = (process.env.DEFAULT_PROVIDER ?? 'deepseek') as
-  | 'deepseek'
-  | 'minimax'
+export const DEFAULT_PROVIDER = 'deepseek' as const
 
 export function getProviderConfig() {
-  switch (DEFAULT_PROVIDER) {
-    case 'minimax':
-      return {
-        apiKey: MINIMAX_API_KEY,
-        baseURL: MINIMAX_BASE_URL,
-        model: MINIMAX_MODEL,
-      }
-    case 'deepseek':
-    default:
-      return {
-        apiKey: DEEPSEEK_API_KEY,
-        baseURL: DEEPSEEK_BASE_URL,
-        model: DEEPSEEK_MODEL,
-      }
+  return {
+    apiKey: DEEPSEEK_API_KEY,
+    baseURL: DEEPSEEK_BASE_URL,
+    model: DEEPSEEK_MODEL,
   }
 }
 
