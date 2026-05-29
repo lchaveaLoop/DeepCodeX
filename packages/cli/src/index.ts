@@ -10,6 +10,7 @@ import {
   loadSession,
   type ToolCall,
 } from '@fagent/agent';
+import { renderPlan, renderPlanProgress } from './plan-render.js';
 
 // ═══════════════════════════════════════════════════
 // ANSI styling
@@ -55,6 +56,7 @@ type Phase = 'idle' | 'reasoning' | 'content' | 'tool_calls';
 
 let phase: Phase = 'idle';
 let pendingNewline = false; // reasoning writes need trailing \n before content
+let lastRenderedPlanId: string | null = null;
 
 function enterPhase(newPhase: Phase) {
   if (phase === newPhase) return;
@@ -123,6 +125,18 @@ function buildAgent() {
         console.log(SEP);
         return answer.trim().toLowerCase() === 'y';
       },
+      onPlanUpdate(plan) {
+        if (phase === 'reasoning' && pendingNewline) {
+          process.stdout.write(ansi.reset + '\n');
+          pendingNewline = false;
+        }
+        if (lastRenderedPlanId !== plan.id) {
+          lastRenderedPlanId = plan.id;
+          console.log('\n' + style(renderPlan(plan), ansi.gray));
+        } else {
+          console.log(style(renderPlanProgress(plan), ansi.gray));
+        }
+      },
     },
   });
 }
@@ -135,6 +149,8 @@ function printHelp() {
     ['/tools', 'List available tools'],
     ['/save <path>', 'Save session to JSON'],
     ['/load <path>', 'Load saved session'],
+    ['/plan', 'Show current plan'],
+    ['/plan clear', 'Clear current plan'],
     ['/reset', 'Start fresh session'],
     ['/help', 'Show this message'],
     ['/exit', 'Quit'],
@@ -192,6 +208,16 @@ async function main() {
           continue;
         }
 
+        case '/plan':
+          if (arg === 'clear') {
+            agent.clearPlan();
+            lastRenderedPlanId = null;
+            console.log(style('Plan cleared.', ansi.dim));
+          } else {
+            console.log(renderPlan(agent.currentPlan));
+          }
+          continue;
+
         case '/save':
           if (!arg) {
             console.log(style('Usage: /save <filepath>', ansi.red));
@@ -225,6 +251,7 @@ async function main() {
         case '/reset':
           agent = buildAgent();
           phase = 'idle';
+          lastRenderedPlanId = null;
           console.log(style('Session reset.', ansi.dim));
           continue;
 

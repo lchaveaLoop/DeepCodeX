@@ -7,6 +7,15 @@ import type OpenAI from 'openai'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
 import type { AgentRunState, RunStatus, RunStepKind } from './runtime.js'
+import {
+  buildAgentContext,
+  createPlanDraft,
+  normalizePlanningConfig,
+  shouldCreatePlan,
+  TaskManager,
+  type AgentPlanState,
+  type PlanningConfig,
+} from './planning/index.js'
 
 function createProvider() {
   return new DeepSeekProvider(getProviderConfig())
@@ -16,6 +25,7 @@ export interface AgentCallbacks extends StreamCallbacks {
   /** Called when a destructive tool needs user confirmation. Return true to proceed. */
   onConfirm?: (_toolName: string, _args: Record<string, unknown>) => Promise<boolean>
   onToolResult?: (_tc: ToolCall, _result: string) => void
+  onPlanUpdate?: (_plan: AgentPlanState) => void
 }
 
 export interface AgentConfig {
@@ -25,6 +35,7 @@ export interface AgentConfig {
   maxRounds?: number
   systemPrompt?: string
   provider?: LLMProvider
+  planning?: PlanningConfig
 }
 
 type AssistantMessageWithReasoning = OpenAI.Chat.ChatCompletionAssistantMessageParam & {
@@ -41,6 +52,9 @@ export class Agent {
   private systemPrompt: string
   private totalRounds = 0
   private currentRunState: AgentRunState | null = null
+  private taskManager = new TaskManager()
+  private planningConfig: Required<PlanningConfig>
+  private hasLoadedHistory = false
 
   constructor(config: AgentConfig)
   constructor(registry: ToolRegistry, callbacks?: AgentCallbacks)
@@ -55,6 +69,7 @@ export class Agent {
       this.events = new EventEmitter()
       this.maxRounds = MAX_TOOL_ROUNDS
       this.systemPrompt = SYSTEM_PROMPT
+      this.planningConfig = normalizePlanningConfig()
       // Legacy constructor always uses DeepSeek (tests mock streamAndAccumulate)
       this.provider = new DeepSeekProvider({
         apiKey: process.env.DEEPSEEK_API_KEY ?? '',
@@ -69,6 +84,7 @@ export class Agent {
       this.maxRounds = registryOrConfig.maxRounds ?? MAX_TOOL_ROUNDS
       this.systemPrompt = registryOrConfig.systemPrompt ?? SYSTEM_PROMPT
       this.provider = registryOrConfig.provider ?? createProvider()
+      this.planningConfig = normalizePlanningConfig(registryOrConfig.planning)
     }
 
     this.messages = [{ role: 'system', content: this.systemPrompt }]
@@ -90,8 +106,18 @@ export class Agent {
     return this.currentRunState
   }
 
+  get currentPlan(): AgentPlanState | null {
+    return this.taskManager.currentPlan
+  }
+
   loadMessages(msgs: OpenAI.Chat.ChatCompletionMessageParam[]): void {
     this.messages = msgs
+    this.hasLoadedHistory = true
+  }
+
+  clearPlan(): void {
+    this.taskManager.clearPlan()
+    this.events.emit(AgentEvent.PLAN_CLEARED, {})
   }
 
   private startRun(input: string): AgentRunState {
@@ -163,6 +189,86 @@ export class Agent {
     }
   }
 
+  private async maybeCreatePlan(userInput: string): Promise<void> {
+    if (!shouldCreatePlan(userInput, this.planningConfig)) return
+
+    const context = buildAgentContext({
+      registry: this.registry,
+      provider: this.provider,
+      messageCount: this.messages.length,
+      hasLoadedHistory: this.hasLoadedHistory,
+    })
+
+    try {
+      const draft = await createPlanDraft({
+        provider: this.provider,
+        userInput,
+        context,
+        maxSteps: this.planningConfig.maxSteps,
+      })
+      if (!draft) return
+
+      const plan = this.taskManager.createPlan(draft)
+      this.events.emit(AgentEvent.PLAN_CREATED, { plan })
+      this.emitPlanUpdate(plan)
+      const step = this.taskManager.currentStep
+      if (step) this.events.emit(AgentEvent.PLAN_STEP_START, { plan, step })
+    } catch {
+      // Planning is advisory. Invalid JSON or provider errors fall back to normal execution.
+    }
+  }
+
+  private messagesWithPlanContext(): OpenAI.Chat.ChatCompletionMessageParam[] {
+    if (!this.currentPlan) return this.messages
+
+    return [
+      ...this.messages,
+      {
+        role: 'system',
+        content:
+          'Current execution plan for this run. Use it to stay oriented, but keep following the user request and available tools.\n' +
+          this.taskManager.formatSummary(),
+      },
+    ]
+  }
+
+  private emitPlanUpdate(plan: AgentPlanState | null): void {
+    if (!plan) return
+    this.events.emit(AgentEvent.PLAN_UPDATED, { plan })
+    this.callbacks?.onPlanUpdate?.(plan)
+  }
+
+  private completePlanStep(result: string): void {
+    const step = this.taskManager.currentStep
+    const plan = this.taskManager.completeCurrentStep(result)
+    if (!plan || !step) return
+    this.events.emit(AgentEvent.PLAN_STEP_COMPLETE, { plan, step })
+    this.emitPlanUpdate(plan)
+    const next = this.taskManager.currentStep
+    if (next) this.events.emit(AgentEvent.PLAN_STEP_START, { plan, step: next })
+  }
+
+  private failPlanStep(reason: string): void {
+    const step = this.taskManager.currentStep
+    const plan = this.taskManager.failCurrentStep(reason)
+    if (!plan || !step) return
+    this.events.emit(AgentEvent.PLAN_STEP_FAIL, { plan, step, reason })
+    this.emitPlanUpdate(plan)
+  }
+
+  private blockPlanStep(reason: string): void {
+    const step = this.taskManager.currentStep
+    const plan = this.taskManager.blockCurrentStep(reason)
+    if (!plan || !step) return
+    this.events.emit(AgentEvent.PLAN_STEP_FAIL, { plan, step, reason })
+    this.emitPlanUpdate(plan)
+  }
+
+  private failPlan(reason: string): void {
+    const plan = this.taskManager.failPlan(reason)
+    if (plan) this.emitPlanUpdate(plan)
+  }
+
   async run(userInput: string): Promise<string> {
     this.totalRounds = 0
     this.startRun(userInput)
@@ -170,6 +276,7 @@ export class Agent {
     this.recordStep('user_message', { data: { content: userInput } })
     this.events.emit(AgentEvent.RUN_START, { input: userInput })
     this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
+    await this.maybeCreatePlan(userInput)
 
     const tools = this.registry.getDefinitions()
 
@@ -180,10 +287,10 @@ export class Agent {
       this.events.emit(AgentEvent.ROUND_START, { round })
       this.recordStep('llm_request', {
         round,
-        data: { messageCount: this.messages.length, toolCount: tools.length },
+        data: { messageCount: this.messagesWithPlanContext().length, toolCount: tools.length },
       })
       this.events.emit(AgentEvent.LLM_REQUEST, {
-        messageCount: this.messages.length,
+        messageCount: this.messagesWithPlanContext().length,
         toolCount: tools.length,
       })
 
@@ -191,7 +298,7 @@ export class Agent {
 
       try {
         const response = await this.provider.stream(
-          this.messages,
+          this.messagesWithPlanContext(),
           tools,
           this.createStreamCallbacks()
         )
@@ -254,6 +361,9 @@ export class Agent {
 
         // ── No tool calls → final answer ──
         if (response.toolCalls.length === 0) {
+          if (this.taskManager.currentStep) {
+            this.completePlanStep(response.content ?? '')
+          }
           this.events.emit(AgentEvent.ROUND_END, { round })
           this.recordStep('final', { round, data: { output: response.content ?? '' } })
           this.finishRun('completed', response.content ?? '')
@@ -298,6 +408,7 @@ export class Agent {
                   content: '[Rejected by user]',
                 })
                 this.callbacks?.onToolResult?.(tc, '[Rejected by user]')
+                this.blockPlanStep('[Rejected by user]')
                 continue
               }
             }
@@ -329,6 +440,11 @@ export class Agent {
             })
             this.events.emit(AgentEvent.MESSAGE_TOOL, { toolCallId: tc.id, content: result })
             this.callbacks?.onToolResult?.(tc, result)
+            if (result.startsWith('Error:')) {
+              this.failPlanStep(result)
+            } else {
+              this.completePlanStep(result)
+            }
           } catch (e) {
             const error = e instanceof Error ? e : new Error(String(e))
             this.recordStep('tool_error', {
@@ -338,6 +454,7 @@ export class Agent {
               data: { error: error.message },
             })
             this.events.emit(AgentEvent.TOOL_ERROR, { id: tc.id, name: tc.name, error })
+            this.failPlanStep(error.message)
           }
         }
       } catch (e) {
@@ -352,6 +469,7 @@ export class Agent {
     }
 
     this.events.emit(AgentEvent.MAX_ROUNDS, { maxRounds: this.maxRounds })
+    this.failPlan('Maximum tool-calling rounds reached')
     const output =
       "I've reached the maximum number of tool-calling rounds. Please refine your question or ask me to continue."
     this.recordStep('max_rounds', { data: { maxRounds: this.maxRounds, output } })

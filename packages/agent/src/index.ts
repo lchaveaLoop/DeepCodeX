@@ -10,6 +10,23 @@ export type { ToolDef } from './tools/index.js'
 export { saveSession, loadSession } from './session.js'
 export type { SessionMessage } from './session.js'
 export type { AgentRunState, RunStatus, RunStep, RunStepKind } from './runtime.js'
+export {
+  TaskManager,
+  buildAgentContext,
+  createPlanDraft,
+  normalizePlanningConfig,
+  shouldCreatePlan,
+} from './planning/index.js'
+export type {
+  AgentContext,
+  AgentPlanState,
+  BuildAgentContextOptions,
+  PlanDraft,
+  PlanningConfig,
+  PlanStatus,
+  PlanStep,
+  PlanStepStatus,
+} from './planning/index.js'
 
 export * as config from './config.js'
 

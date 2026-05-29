@@ -25,6 +25,14 @@ export const AgentEvent = {
   TOOL_CONFIRM: 'tool:confirm',
   TOOL_REJECTED: 'tool:rejected',
 
+  // Plan events
+  PLAN_CREATED: 'plan:created',
+  PLAN_UPDATED: 'plan:updated',
+  PLAN_STEP_START: 'plan:step:start',
+  PLAN_STEP_COMPLETE: 'plan:step:complete',
+  PLAN_STEP_FAIL: 'plan:step:fail',
+  PLAN_CLEARED: 'plan:cleared',
+
   // Message events
   MESSAGE_ADD: 'message:add',
   MESSAGE_USER: 'message:user',
@@ -60,6 +68,13 @@ export interface AgentEventData {
   'tool:error': { id: string; name: string; error: Error }
   'tool:confirm': { name: string; args: Record<string, unknown> }
   'tool:rejected': { name: string; args: Record<string, unknown> }
+
+  'plan:created': { plan: unknown }
+  'plan:updated': { plan: unknown }
+  'plan:step:start': { plan: unknown; step: unknown }
+  'plan:step:complete': { plan: unknown; step: unknown }
+  'plan:step:fail': { plan: unknown; step: unknown; reason: string }
+  'plan:cleared': Record<string, never>
 
   'message:add': { role: string; content: unknown }
   'message:user': { content: string }
