@@ -77,6 +77,7 @@ export async function createPlanDraft(options: {
       content: [
         `User request: ${options.userInput}`,
         `Workspace: ${options.context.workspace.root}`,
+        ...formatRepositoryContext(options.context),
         `Tools: ${options.context.tools.map((tool) => tool.name).join(', ')}`,
         `Maximum steps: ${options.maxSteps}`,
       ].join('\n'),
@@ -95,6 +96,45 @@ export async function createPlanDraft(options: {
     goal: parsed.data.goal,
     steps: parsed.data.steps.slice(0, options.maxSteps),
   }
+}
+
+function formatRepositoryContext(context: AgentContext): string[] {
+  const repository = context.repository
+  const lines: string[] = []
+
+  if (repository.packageManager) {
+    const version = repository.packageManager.version ? `@${repository.packageManager.version}` : ''
+    lines.push(`Package manager: ${repository.packageManager.name}${version}`)
+  }
+
+  if (repository.scripts.length > 0) {
+    lines.push(`Scripts: ${repository.scripts.map((script) => script.name).join(', ')}`)
+  }
+
+  if (repository.workspaces.length > 0) {
+    lines.push(`Workspaces: ${repository.workspaces.slice(0, 8).join(', ')}`)
+  }
+
+  if (repository.keyFiles.length > 0) {
+    lines.push(`Key files: ${repository.keyFiles.slice(0, 12).join(', ')}`)
+  }
+
+  if (repository.packageFiles.length > 0) {
+    lines.push(`Package files: ${repository.packageFiles.slice(0, 12).join(', ')}`)
+  }
+
+  if (repository.git.isRepository) {
+    const branch = repository.git.branch ?? 'unknown branch'
+    lines.push(`Git: ${branch}, ${repository.git.dirty ? 'dirty' : 'clean'}`)
+  }
+
+  if (context.verification.commands.length > 0) {
+    lines.push(
+      `Verification commands: ${context.verification.commands.map((command) => command.command).join(', ')}`
+    )
+  }
+
+  return lines
 }
 
 function extractJson(content: string): string | null {

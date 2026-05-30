@@ -64,9 +64,18 @@ export interface AgentEventData {
 
   'tool:call': { id: string; name: string; arguments: Record<string, unknown> }
   'tool:start': { id: string; name: string }
-  'tool:result': { id: string; name: string; result: string; duration: number }
+  'tool:result': {
+    id: string
+    name: string
+    result: string
+    content?: string
+    ok?: boolean
+    error?: string
+    execution?: unknown
+    duration: number
+  }
   'tool:error': { id: string; name: string; error: Error }
-  'tool:confirm': { name: string; args: Record<string, unknown> }
+  'tool:confirm': { name: string; args: Record<string, unknown>; execution?: unknown }
   'tool:rejected': { name: string; args: Record<string, unknown> }
 
   'plan:created': { plan: unknown }

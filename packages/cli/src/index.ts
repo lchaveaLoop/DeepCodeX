@@ -11,6 +11,7 @@ import {
   type ToolCall,
 } from '@fagent/agent';
 import { renderPlan, renderPlanProgress } from './plan-render.js';
+import { renderRunSummary } from './run-render.js';
 
 // ═══════════════════════════════════════════════════
 // ANSI styling
@@ -117,9 +118,21 @@ function buildAgent() {
         }
         console.log(`${ansi.dim}└──${ansi.reset}`);
       },
-      async onConfirm(name, args) {
+      async onConfirm(name, args, execution) {
         console.log(SEP);
         console.log(`  ${style('⚠ ' + name, ansi.yellow)}`);
+        if (execution) {
+          const riskColor =
+            execution.risk === 'high'
+              ? ansi.red
+              : execution.risk === 'medium'
+                ? ansi.yellow
+                : ansi.gray;
+          console.log(`  Risk: ${style(String(execution.risk).toUpperCase(), riskColor)}`);
+          for (const reason of execution.reasons.slice(0, 3)) {
+            console.log(`  ${style('- ' + reason, ansi.gray)}`);
+          }
+        }
         console.log(`  ${style(JSON.stringify(args, null, 2), ansi.gray)}`);
         const answer = await ask(`  ${style('Execute? [y/N] ', ansi.yellow)}`);
         console.log(SEP);
@@ -151,6 +164,7 @@ function printHelp() {
     ['/load <path>', 'Load saved session'],
     ['/plan', 'Show current plan'],
     ['/plan clear', 'Clear current plan'],
+    ['/status', 'Show last run summary'],
     ['/reset', 'Start fresh session'],
     ['/help', 'Show this message'],
     ['/exit', 'Quit'],
@@ -218,6 +232,10 @@ async function main() {
           }
           continue;
 
+        case '/status':
+          console.log(renderRunSummary(agent.currentRun));
+          continue;
+
         case '/save':
           if (!arg) {
             console.log(style('Usage: /save <filepath>', ansi.red));
@@ -266,6 +284,7 @@ async function main() {
     console.log();
     try {
       await agent.run(input);
+      console.log('\n' + style(renderRunSummary(agent.currentRun), ansi.gray));
     } catch (e: unknown) {
       const err = e as Error;
       console.log(style(`\nError: ${err?.message || e}`, ansi.red));

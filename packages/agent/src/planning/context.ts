@@ -3,6 +3,8 @@ import os from 'node:os'
 import { getWorkspaceRoot } from '../config.js'
 import type { LLMProvider } from '../providers/llm-provider.js'
 import type { ToolRegistry } from '../tools/index.js'
+import { analyzeRepository, type RepositoryInfo } from './repository.js'
+import { inferVerificationCommands, type VerificationCommand } from './verification.js'
 
 export interface AgentContext {
   tools: Array<{
@@ -15,6 +17,10 @@ export interface AgentContext {
     root: string
     topLevelEntries: string[]
     entryCount: number
+  }
+  repository: RepositoryInfo
+  verification: {
+    commands: VerificationCommand[]
   }
   model: {
     name: string
@@ -64,6 +70,7 @@ export function buildAgentContext(options: BuildAgentContextOptions): AgentConte
       requiresConfirm: tool?.requiresConfirm ?? false,
     }
   })
+  const repository = analyzeRepository(root)
 
   return {
     tools,
@@ -71,6 +78,10 @@ export function buildAgentContext(options: BuildAgentContextOptions): AgentConte
       root,
       topLevelEntries: entries,
       entryCount: entries.length,
+    },
+    repository,
+    verification: {
+      commands: inferVerificationCommands(repository),
     },
     model: {
       name: options.provider.model,

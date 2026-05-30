@@ -35,6 +35,9 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 | `/tools`       | 列出所有可用工具         |
 | `/save <path>` | 保存当前会话到 JSON 文件 |
 | `/load <path>` | 从 JSON 文件恢复历史会话 |
+| `/plan`        | 查看当前执行计划         |
+| `/plan clear`  | 清空当前执行计划         |
+| `/status`      | 查看最近一次运行摘要     |
 | `/reset`       | 重置会话，开始新对话     |
 | `/help`        | 显示帮助信息             |
 | `/exit`        | 退出                     |
@@ -46,9 +49,9 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 | **web_search**  | DuckDuckGo 网页搜索，返回标题+URL+摘要 | ❌     |
 | **read_file**   | 读取工作区文件，支持行范围             | ❌     |
 | **write_file**  | 写入或覆盖工作区文件                   | ⚠ 是   |
-| **run_command** | 执行 shell 命令                        | ⚠ 是   |
+| **run_command** | 执行 shell 命令，含风险分级与硬阻断    | ⚠ 是   |
 
-`⚠ 需确认` 的工具执行前会弹出 `[y/N]` 确认提示。
+`⚠ 需确认` 的工具执行前会弹出 `[y/N]` 确认提示。`run_command` 会在确认前生成 `low` / `medium` / `high` / `blocked` 风险信息；`blocked` 命令会直接作为工具失败返回，不进入确认或执行路径。
 
 ## 示例
 
@@ -83,6 +86,7 @@ packages/
 │   │   ├── agent.ts       # Agent 循环
 │   │   ├── session.ts     # 会话持久化
 │   │   ├── providers/     # DeepSeek + OpenAI-compatible Provider
+│   │   ├── planning/      # 计划状态、仓库识别、验证命令推导
 │   │   └── tools/
 │   │       ├── web-search.ts
 │   │       ├── workspace.ts

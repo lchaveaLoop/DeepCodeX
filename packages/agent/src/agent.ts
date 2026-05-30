@@ -1,15 +1,17 @@
 import { MAX_TOOL_ROUNDS, SYSTEM_PROMPT, getProviderConfig } from './config.js'
 import { type StreamCallbacks, type ToolCall } from './llm.js'
-import { ToolRegistry } from './tools/index.js'
+import { ToolRegistry, type ToolExecutionInfo, type ToolExecutionResult } from './tools/index.js'
 import { EventEmitter } from './core/event-emitter.js'
 import { AgentEvent } from './core/event-types.js'
 import type OpenAI from 'openai'
 import type { LLMProvider } from './providers/llm-provider.js'
 import { DeepSeekProvider } from './providers/deepseek-provider.js'
-import type { AgentRunState, RunStatus, RunStepKind } from './runtime.js'
+import type { AgentRunState, RunStatus, RunStepKind, WorkspaceChange } from './runtime.js'
 import {
+  type AgentContext,
   buildAgentContext,
   createPlanDraft,
+  matchVerificationCommand,
   normalizePlanningConfig,
   shouldCreatePlan,
   TaskManager,
@@ -23,7 +25,11 @@ function createProvider() {
 
 export interface AgentCallbacks extends StreamCallbacks {
   /** Called when a destructive tool needs user confirmation. Return true to proceed. */
-  onConfirm?: (_toolName: string, _args: Record<string, unknown>) => Promise<boolean>
+  onConfirm?: (
+    _toolName: string,
+    _args: Record<string, unknown>,
+    _execution?: ToolExecutionInfo
+  ) => Promise<boolean>
   onToolResult?: (_tc: ToolCall, _result: string) => void
   onPlanUpdate?: (_plan: AgentPlanState) => void
 }
@@ -128,6 +134,10 @@ export class Agent {
       status: 'running',
       startedAt: timestamp,
       totalRounds: 0,
+      workspaceChanges: {
+        changed: false,
+        changes: [],
+      },
       steps: [],
     }
     return this.currentRunState
@@ -189,15 +199,25 @@ export class Agent {
     }
   }
 
-  private async maybeCreatePlan(userInput: string): Promise<void> {
-    if (!shouldCreatePlan(userInput, this.planningConfig)) return
-
-    const context = buildAgentContext({
+  private buildCurrentContext(): AgentContext {
+    return buildAgentContext({
       registry: this.registry,
       provider: this.provider,
       messageCount: this.messages.length,
       hasLoadedHistory: this.hasLoadedHistory,
     })
+  }
+
+  private initializeVerification(context: AgentContext): void {
+    if (!this.currentRunState) return
+    this.currentRunState.verification = {
+      commands: context.verification.commands,
+      results: [],
+    }
+  }
+
+  private async maybeCreatePlan(userInput: string, context: AgentContext): Promise<void> {
+    if (!shouldCreatePlan(userInput, this.planningConfig)) return
 
     try {
       const draft = await createPlanDraft({
@@ -219,15 +239,45 @@ export class Agent {
   }
 
   private messagesWithPlanContext(): OpenAI.Chat.ChatCompletionMessageParam[] {
-    if (!this.currentPlan) return this.messages
+    const contextParts: string[] = []
+
+    if (this.currentPlan) {
+      contextParts.push(
+        'Current execution plan for this run. Use it to stay oriented, but keep following the user request and available tools.\n' +
+          this.taskManager.formatSummary()
+      )
+    }
+
+    const verification = this.currentRunState?.verification
+    if (verification && verification.commands.length > 0) {
+      const required = verification.commands.filter((command) => command.required)
+      const optional = verification.commands.filter((command) => !command.required)
+      const results = verification.results.map((result) => `${result.command}: ${result.status}`)
+
+      contextParts.push(
+        [
+          'Verification requirements for this run.',
+          required.length > 0
+            ? `Required verification commands: ${required.map((command) => command.command).join(', ')}`
+            : 'Required verification commands: none',
+          optional.length > 0
+            ? `Optional verification commands: ${optional.map((command) => command.command).join(', ')}`
+            : '',
+          results.length > 0 ? `Verification results so far: ${results.join(', ')}` : '',
+          'Run required verification before final delivery when code, files, or commands changed the workspace.',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      )
+    }
+
+    if (contextParts.length === 0) return this.messages
 
     return [
       ...this.messages,
       {
         role: 'system',
-        content:
-          'Current execution plan for this run. Use it to stay oriented, but keep following the user request and available tools.\n' +
-          this.taskManager.formatSummary(),
+        content: contextParts.join('\n\n'),
       },
     ]
   }
@@ -269,6 +319,213 @@ export class Agent {
     if (plan) this.emitPlanUpdate(plan)
   }
 
+  private pendingRequiredVerificationCommands(): string[] {
+    const verification = this.currentRunState?.verification
+    if (!verification || !this.currentRunState?.workspaceChanges?.changed) return []
+
+    return verification.commands
+      .filter((command) => command.required)
+      .filter((command) => {
+        const latest = [...verification.results]
+          .reverse()
+          .find((result) => result.command === command.command)
+        return latest?.status !== 'passed'
+      })
+      .map((command) => command.command)
+  }
+
+  private requestPendingVerification(round: number, commands: string[]): void {
+    const content = [
+      'Required verification is still pending before final delivery.',
+      `Run these commands with run_command: ${commands.join(', ')}`,
+      'After verification passes, provide the final answer.',
+    ].join('\n')
+
+    this.messages.push({ role: 'system', content })
+    this.recordStep('verification_required', {
+      round,
+      data: { commands, content },
+    })
+  }
+
+  private recordToolExecutionResult(
+    tc: ToolCall,
+    round: number,
+    result: ToolExecutionResult
+  ): void {
+    const toolMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
+      role: 'tool',
+      tool_call_id: tc.id,
+      content: result.content,
+    }
+    this.messages.push(toolMessage)
+    this.recordStep('tool_result', {
+      round,
+      toolCallId: tc.id,
+      toolName: tc.name,
+      data: {
+        result: result.content,
+        content: result.content,
+        ok: result.ok,
+        error: result.error,
+        duration: result.duration,
+        execution: result.execution,
+      },
+    })
+
+    this.events.emit(AgentEvent.TOOL_RESULT, {
+      id: tc.id,
+      name: tc.name,
+      result: result.content,
+      content: result.content,
+      ok: result.ok,
+      error: result.error,
+      duration: result.duration,
+      execution: result.execution,
+    })
+    this.events.emit(AgentEvent.MESSAGE_TOOL, { toolCallId: tc.id, content: result.content })
+    this.callbacks?.onToolResult?.(tc, result.content)
+    this.recordVerificationResult(tc, round, result)
+    this.recordWorkspaceChange(tc, round, result)
+
+    if (result.ok) {
+      this.completePlanStep(result.content)
+    } else {
+      this.failPlanStep(result.error ?? result.content)
+    }
+  }
+
+  private recordWorkspaceChange(tc: ToolCall, round: number, result: ToolExecutionResult): void {
+    if (!result.ok || !this.currentRunState?.workspaceChanges) return
+
+    const timestamp = new Date().toISOString()
+    let change: WorkspaceChange | null = null
+
+    if (tc.name === 'write_file') {
+      const target = typeof tc.arguments.path === 'string' ? tc.arguments.path : undefined
+      change = {
+        kind: 'file_write',
+        sourceTool: tc.name,
+        target,
+        summary: target ? `write_file ${target}` : 'write_file',
+        confidence: 'confirmed',
+        toolCallId: tc.id,
+        round,
+        timestamp,
+      }
+    }
+
+    if (
+      tc.name === 'run_command' &&
+      (result.execution?.risk === 'medium' || result.execution?.risk === 'high')
+    ) {
+      const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : undefined
+      change = {
+        kind: 'command',
+        sourceTool: tc.name,
+        command,
+        summary: command ?? result.execution.summary,
+        confidence: 'possible',
+        toolCallId: tc.id,
+        round,
+        timestamp,
+      }
+    }
+
+    if (!change) return
+
+    this.currentRunState.workspaceChanges.changed = true
+    this.currentRunState.workspaceChanges.changes.push(change)
+    this.recordStep('workspace_change', {
+      round,
+      toolCallId: tc.id,
+      toolName: tc.name,
+      data: { ...change },
+    })
+  }
+
+  private recordVerificationResult(tc: ToolCall, round: number, result: ToolExecutionResult): void {
+    if (tc.name !== 'run_command') return
+    if (!this.currentRunState?.verification) return
+
+    const command = typeof tc.arguments.command === 'string' ? tc.arguments.command : ''
+    const match = matchVerificationCommand(command, this.currentRunState.verification.commands)
+    if (!match) return
+
+    const timestamp = new Date().toISOString()
+    const verificationResult = {
+      name: match.name,
+      command: match.command,
+      ok: result.ok,
+      status: result.ok ? ('passed' as const) : ('failed' as const),
+      content: result.content,
+      error: result.error,
+      duration: result.duration,
+      toolCallId: tc.id,
+      round,
+      timestamp,
+    }
+
+    this.currentRunState.verification.results.push(verificationResult)
+    this.recordStep('verification_result', {
+      round,
+      toolCallId: tc.id,
+      toolName: tc.name,
+      data: verificationResult,
+    })
+  }
+
+  private async executeToolCall(tc: ToolCall, round: number): Promise<void> {
+    const tool = this.registry.get(tc.name)
+    const execution = this.registry.describeExecution(tc.name, tc.arguments)
+    this.recordStep('tool_call', {
+      round,
+      toolCallId: tc.id,
+      toolName: tc.name,
+      data: { arguments: tc.arguments, execution },
+    })
+    this.events.emit(AgentEvent.TOOL_START, { id: tc.id, name: tc.name })
+
+    if (execution?.blocked) {
+      const result = await this.registry.executeDetailed(tc.name, tc.arguments)
+      this.recordToolExecutionResult(tc, round, result)
+      return
+    }
+
+    if (tool?.requiresConfirm) {
+      this.events.emit(AgentEvent.TOOL_CONFIRM, { name: tc.name, args: tc.arguments, execution })
+      if (this.callbacks?.onConfirm) {
+        const approved = await this.callbacks.onConfirm(tc.name, tc.arguments, execution)
+        if (!approved) {
+          const content = '[Rejected by user]'
+          const rejectedMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
+            role: 'tool',
+            tool_call_id: tc.id,
+            content,
+          }
+          this.messages.push(rejectedMessage)
+          this.recordStep('tool_rejected', {
+            round,
+            toolCallId: tc.id,
+            toolName: tc.name,
+            data: { ok: false, content, error: content, execution },
+          })
+          this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
+          this.events.emit(AgentEvent.MESSAGE_TOOL, {
+            toolCallId: tc.id,
+            content,
+          })
+          this.callbacks?.onToolResult?.(tc, content)
+          this.blockPlanStep(content)
+          return
+        }
+      }
+    }
+
+    const result = await this.registry.executeDetailed(tc.name, tc.arguments)
+    this.recordToolExecutionResult(tc, round, result)
+  }
+
   async run(userInput: string): Promise<string> {
     this.totalRounds = 0
     this.startRun(userInput)
@@ -276,7 +533,9 @@ export class Agent {
     this.recordStep('user_message', { data: { content: userInput } })
     this.events.emit(AgentEvent.RUN_START, { input: userInput })
     this.events.emit(AgentEvent.MESSAGE_USER, { content: userInput })
-    await this.maybeCreatePlan(userInput)
+    const context = this.buildCurrentContext()
+    this.initializeVerification(context)
+    await this.maybeCreatePlan(userInput, context)
 
     const tools = this.registry.getDefinitions()
 
@@ -361,6 +620,13 @@ export class Agent {
 
         // ── No tool calls → final answer ──
         if (response.toolCalls.length === 0) {
+          const pendingVerification = this.pendingRequiredVerificationCommands()
+          if (pendingVerification.length > 0) {
+            this.requestPendingVerification(round, pendingVerification)
+            this.events.emit(AgentEvent.ROUND_END, { round })
+            continue
+          }
+
           if (this.taskManager.currentStep) {
             this.completePlanStep(response.content ?? '')
           }
@@ -376,86 +642,7 @@ export class Agent {
 
         // ── Execute tools ──
         for (const tc of response.toolCalls) {
-          const tool = this.registry.get(tc.name)
-          this.recordStep('tool_call', {
-            round,
-            toolCallId: tc.id,
-            toolName: tc.name,
-            data: { arguments: tc.arguments },
-          })
-          this.events.emit(AgentEvent.TOOL_START, { id: tc.id, name: tc.name })
-
-          // Check confirmation
-          if (tool?.requiresConfirm) {
-            this.events.emit(AgentEvent.TOOL_CONFIRM, { name: tc.name, args: tc.arguments })
-            if (this.callbacks?.onConfirm) {
-              const approved = await this.callbacks.onConfirm(tc.name, tc.arguments)
-              if (!approved) {
-                const rejectedMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
-                  role: 'tool',
-                  tool_call_id: tc.id,
-                  content: '[Rejected by user]',
-                }
-                this.messages.push(rejectedMessage)
-                this.recordStep('tool_rejected', {
-                  round,
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                })
-                this.events.emit(AgentEvent.TOOL_REJECTED, { name: tc.name, args: tc.arguments })
-                this.events.emit(AgentEvent.MESSAGE_TOOL, {
-                  toolCallId: tc.id,
-                  content: '[Rejected by user]',
-                })
-                this.callbacks?.onToolResult?.(tc, '[Rejected by user]')
-                this.blockPlanStep('[Rejected by user]')
-                continue
-              }
-            }
-          }
-
-          const toolStart = Date.now()
-          try {
-            const result = await this.registry.execute(tc.name, tc.arguments)
-            const toolDuration = Date.now() - toolStart
-
-            const toolMessage: OpenAI.Chat.ChatCompletionToolMessageParam = {
-              role: 'tool',
-              tool_call_id: tc.id,
-              content: result,
-            }
-            this.messages.push(toolMessage)
-            this.recordStep('tool_result', {
-              round,
-              toolCallId: tc.id,
-              toolName: tc.name,
-              data: { result, duration: toolDuration },
-            })
-
-            this.events.emit(AgentEvent.TOOL_RESULT, {
-              id: tc.id,
-              name: tc.name,
-              result,
-              duration: toolDuration,
-            })
-            this.events.emit(AgentEvent.MESSAGE_TOOL, { toolCallId: tc.id, content: result })
-            this.callbacks?.onToolResult?.(tc, result)
-            if (result.startsWith('Error:')) {
-              this.failPlanStep(result)
-            } else {
-              this.completePlanStep(result)
-            }
-          } catch (e) {
-            const error = e instanceof Error ? e : new Error(String(e))
-            this.recordStep('tool_error', {
-              round,
-              toolCallId: tc.id,
-              toolName: tc.name,
-              data: { error: error.message },
-            })
-            this.events.emit(AgentEvent.TOOL_ERROR, { id: tc.id, name: tc.name, error })
-            this.failPlanStep(error.message)
-          }
+          await this.executeToolCall(tc, round)
         }
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e))

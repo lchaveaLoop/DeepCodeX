@@ -10,7 +10,7 @@
     "dev": "npm run build -w @fagent/agent && npm run dev -w @fagent/cli",
     "build": "npm run build -w @fagent/agent && npm run build -w @fagent/cli",
     "typecheck": "npm run typecheck -w @fagent/agent && npm run build -w @fagent/agent && npm run typecheck -w @fagent/cli",
-    "test": "npm run test -w @fagent/agent && node packages/agent/node_modules/vitest/vitest.mjs run packages/cli/tests/plan-render.test.ts",
+    "test": "npm run test -w @fagent/agent && node packages/agent/node_modules/vitest/vitest.mjs run packages/cli/tests",
     "lint": "npm run lint -w @fagent/agent && npm run lint -w @fagent/cli",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
