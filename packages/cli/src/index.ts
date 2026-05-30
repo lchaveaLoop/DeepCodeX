@@ -11,7 +11,15 @@ import {
   type ToolCall,
 } from '@fagent/agent';
 import { renderPlan, renderPlanProgress } from './plan-render.js';
-import { renderRunSummary } from './run-render.js';
+import {
+  renderConfirmationCard,
+  renderHelp,
+  renderRunCockpit,
+  renderRunSummary,
+  renderToolCallLine,
+  renderToolResultPreview,
+  renderWelcome,
+} from './run-render.js';
 
 // ═══════════════════════════════════════════════════
 // ANSI styling
@@ -58,6 +66,8 @@ type Phase = 'idle' | 'reasoning' | 'content' | 'tool_calls';
 let phase: Phase = 'idle';
 let pendingNewline = false; // reasoning writes need trailing \n before content
 let lastRenderedPlanId: string | null = null;
+let outputMode: 'compact' | 'verbose' = 'compact';
+let showedThinking = false;
 
 function enterPhase(newPhase: Phase) {
   if (phase === newPhase) return;
@@ -92,6 +102,13 @@ function buildAgent() {
     registry: createRegistry(),
     callbacks: {
       onReasoning(text) {
+        if (outputMode === 'compact') {
+          if (!showedThinking) {
+            console.log(style('Thinking...', ansi.gray));
+            showedThinking = true;
+          }
+          return;
+        }
         enterPhase('reasoning');
         process.stdout.write(text);
       },
@@ -101,40 +118,17 @@ function buildAgent() {
       },
       onToolCall(tc: ToolCall) {
         enterPhase('tool_calls');
-        const argsText = JSON.stringify(tc.arguments);
-        const argsPreview = argsText.length > 60 ? argsText.slice(0, 57) + '…' : argsText;
-        console.log(
-          `\n${ansi.dim}┌──${ansi.reset} ${style(tc.name, ansi.cyan)} ${style(argsPreview, ansi.gray)}`,
-        );
+        console.log(`\n${style(renderToolCallLine(tc.name, tc.arguments), ansi.cyan)}`);
       },
       onToolResult(_tc, result) {
-        const lines = result.split('\n').slice(0, 8);
-        const maxW = Math.min(100, ...lines.map((l) => l.length));
-        for (const line of lines) {
-          console.log(`  ${ansi.gray}│${ansi.reset} ${line.slice(0, maxW)}`);
-        }
-        if (result.split('\n').length > 8) {
-          console.log(`  ${ansi.gray}│${ansi.reset} ${style('…', ansi.dim)}`);
-        }
-        console.log(`${ansi.dim}└──${ansi.reset}`);
+        const preview = renderToolResultPreview(result, { verbose: outputMode === 'verbose' });
+        const lines = preview.split('\n');
+        for (const line of lines) console.log(`  ${style(line, ansi.gray)}`);
       },
       async onConfirm(name, args, execution) {
         console.log(SEP);
-        console.log(`  ${style('⚠ ' + name, ansi.yellow)}`);
-        if (execution) {
-          const riskColor =
-            execution.risk === 'high'
-              ? ansi.red
-              : execution.risk === 'medium'
-                ? ansi.yellow
-                : ansi.gray;
-          console.log(`  Risk: ${style(String(execution.risk).toUpperCase(), riskColor)}`);
-          for (const reason of execution.reasons.slice(0, 3)) {
-            console.log(`  ${style('- ' + reason, ansi.gray)}`);
-          }
-        }
-        console.log(`  ${style(JSON.stringify(args, null, 2), ansi.gray)}`);
-        const answer = await ask(`  ${style('Execute? [y/N] ', ansi.yellow)}`);
+        console.log(style(renderConfirmationCard({ name, args, execution }), ansi.yellow));
+        const answer = await ask(`  ${style('Choice: ', ansi.yellow)}`);
         console.log(SEP);
         return answer.trim().toLowerCase() === 'y';
       },
@@ -155,38 +149,21 @@ function buildAgent() {
 }
 
 // ═══════════════════════════════════════════════════
-// Help
-// ═══════════════════════════════════════════════════
-function printHelp() {
-  for (const [cmd, desc] of [
-    ['/tools', 'List available tools'],
-    ['/save <path>', 'Save session to JSON'],
-    ['/load <path>', 'Load saved session'],
-    ['/plan', 'Show current plan'],
-    ['/plan clear', 'Clear current plan'],
-    ['/status', 'Show last run summary'],
-    ['/reset', 'Start fresh session'],
-    ['/help', 'Show this message'],
-    ['/exit', 'Quit'],
-  ]) {
-    console.log(`  ${style(cmd, ansi.cyan)}  ${desc}`);
-  }
-  console.log();
-}
-
-// ═══════════════════════════════════════════════════
 // Main
 // ═══════════════════════════════════════════════════
 async function main() {
   const providerConfig = config.getProviderConfig();
   console.log();
   console.log(
-    `  ${style('DeepCodeX Agent', ansi.magenta + ansi.bold)}  ${style('TS CLI', ansi.dim)}`,
+    style(
+      renderWelcome({
+        provider: config.DEFAULT_PROVIDER.toUpperCase(),
+        model: providerConfig.model,
+        workspace: process.cwd(),
+      }),
+      ansi.magenta,
+    ),
   );
-  console.log(
-    `  Provider: ${style(config.DEFAULT_PROVIDER.toUpperCase(), ansi.cyan)}  |  Model: ${style(providerConfig.model, ansi.cyan)}`,
-  );
-  console.log(`  Workspace: ${process.cwd()}`);
   console.log();
 
   let agent = buildAgent();
@@ -208,7 +185,7 @@ async function main() {
           return;
 
         case '/help':
-          printHelp();
+          console.log(renderHelp());
           continue;
 
         case '/tools': {
@@ -233,7 +210,20 @@ async function main() {
           continue;
 
         case '/status':
+          console.log(renderRunCockpit(agent.currentRun));
+          console.log();
           console.log(renderRunSummary(agent.currentRun));
+          continue;
+
+        case '/verbose':
+        case '/trace':
+          outputMode = 'verbose';
+          console.log(style('Output mode: verbose.', ansi.dim));
+          continue;
+
+        case '/compact':
+          outputMode = 'compact';
+          console.log(style('Output mode: compact.', ansi.dim));
           continue;
 
         case '/save':
@@ -281,10 +271,11 @@ async function main() {
 
     phase = 'idle';
     pendingNewline = false;
+    showedThinking = false;
     console.log();
     try {
       await agent.run(input);
-      console.log('\n' + style(renderRunSummary(agent.currentRun), ansi.gray));
+      console.log('\n' + style(renderRunCockpit(agent.currentRun), ansi.gray));
     } catch (e: unknown) {
       const err = e as Error;
       console.log(style(`\nError: ${err?.message || e}`, ansi.red));

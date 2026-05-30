@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { renderRunSummary } from '../src/run-render.js';
+import {
+  renderConfirmationCard,
+  renderHelp,
+  renderRunCockpit,
+  renderRunSummary,
+  renderToolCallLine,
+  renderToolResultPreview,
+  renderWelcome,
+} from '../src/run-render.js';
 import type { AgentRunState } from '@fagent/agent';
 
 const baseRun: AgentRunState = {
@@ -66,6 +74,27 @@ const baseRun: AgentRunState = {
 };
 
 describe('run rendering', () => {
+  it('renders a product-oriented welcome screen', () => {
+    const rendered = renderWelcome({
+      provider: 'DEEPSEEK',
+      model: 'deepseek-v4-pro',
+      workspace: 'E:/repo',
+    });
+
+    expect(rendered).toContain('DeepCodeX Agent');
+    expect(rendered).toContain('Provider: DEEPSEEK');
+    expect(rendered).toContain('Mode: compact output');
+    expect(rendered).toContain('/help');
+  });
+
+  it('renders command help with output mode controls', () => {
+    const rendered = renderHelp();
+
+    expect(rendered).toContain('/verbose');
+    expect(rendered).toContain('/compact');
+    expect(rendered).toContain('/status');
+  });
+
   it('renders an empty run state', () => {
     expect(renderRunSummary(null)).toContain('No run has completed yet.');
   });
@@ -164,5 +193,48 @@ describe('run rendering', () => {
     expect(rendered).toContain('Delivery: ready (no workspace changes)');
     expect(rendered).toContain('Workspace changes: none');
     expect(rendered).toContain('Verification: 0/2 passed');
+  });
+
+  it('renders a cockpit view for fast status scanning', () => {
+    const rendered = renderRunCockpit(baseRun);
+
+    expect(rendered).toContain('Cockpit');
+    expect(rendered).toContain('Run: completed');
+    expect(rendered).toContain('Delivery: needs verification');
+    expect(rendered).toContain('Required verification: 1/2 passed');
+  });
+
+  it('renders compact tool call and result previews', () => {
+    expect(renderToolCallLine('run_command', { command: 'npm run test' })).toBe(
+      'Tool: run_command npm run test',
+    );
+    expect(renderToolCallLine('write_file', { path: 'src/index.ts', content: 'hello' })).toContain(
+      'src/index.ts (5 bytes)',
+    );
+
+    const compact = renderToolResultPreview('line one\nline two\nline three', { verbose: false });
+    expect(compact).toBe('Result: line one (+2 lines)');
+
+    const verbose = renderToolResultPreview('line one\nline two', { verbose: true });
+    expect(verbose).toContain('line two');
+  });
+
+  it('renders an approval card with risk and primary target', () => {
+    const rendered = renderConfirmationCard({
+      name: 'run_command',
+      args: { command: 'npm install left-pad' },
+      execution: {
+        summary: 'npm install left-pad',
+        risk: 'medium',
+        blocked: false,
+        requiresConfirmation: true,
+        reasons: ['command may change dependencies'],
+      },
+    });
+
+    expect(rendered).toContain('Action requires approval');
+    expect(rendered).toContain('Tool: run_command');
+    expect(rendered).toContain('Risk: MEDIUM');
+    expect(rendered).toContain('Approve? [y] run');
   });
 });
